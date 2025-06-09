@@ -18,6 +18,7 @@ struct ConsoleLogPlugin : public IRudpPlugin {
                   << inet_ntoa(addr.sin_addr) << ":" << ntohs(addr.sin_port)
                   << " | Seq: " << pkt.hdr.seqId
                   << " | Payload: " << std::string(pkt.payload.begin(), pkt.payload.end())
+                  << " | len =" << sizeof(pkt)
                   << "\n";
     }
 
@@ -26,6 +27,7 @@ struct ConsoleLogPlugin : public IRudpPlugin {
                   << inet_ntoa(addr.sin_addr) << ":" << ntohs(addr.sin_port)
                   << " | Seq: " << pkt.hdr.seqId
                   << " | Payload: " << std::string(pkt.payload.begin(), pkt.payload.end())
+                  << " | len =" << sizeof(pkt)
                   << "\n";
     }
 };

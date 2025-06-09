@@ -47,6 +47,7 @@ struct sockaddr_in_equal {
 class UdpSocketBase {
 protected:
     SOCKET sock = INVALID_SOCKET;
+    std::vector<std::shared_ptr<IRudpPlugin>> plugins;
 
 public:
     virtual ~UdpSocketBase() {
@@ -88,12 +89,32 @@ public:
                          reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
         return ret == (int)len;
     }
+
+    void register_plugin(std::shared_ptr<IRudpPlugin> plugin) {
+        plugins.push_back(plugin);
+    }
+
+    void unregister_plugin(std::shared_ptr<IRudpPlugin> plugin) {
+        plugins.erase(std::remove(plugins.begin(), plugins.end(), plugin), plugins.end());
+    }
+
+protected:
+
+    void notify_send(const packet& pkt, const sockaddr_in& addr) {
+        for (auto& p : plugins)
+            p->on_send(pkt, addr);
+    }
+
+    void notify_receive(const packet& pkt, const sockaddr_in& addr) {
+        for (auto& p : plugins)
+            p->on_receive(pkt, addr);
+    }
+
 };
 
 // ------ UDP Server --------
 
 class UdpServer : public UdpSocketBase {
-    std::vector<std::shared_ptr<IRudpPlugin>> plugins;
 
     std::atomic<bool> running{false};
     std::thread recv_thread;
@@ -139,14 +160,16 @@ public:
         }
     }
 
-    void register_plugin(std::shared_ptr<IRudpPlugin> plugin) {
-        plugins.push_back(plugin);
-    }
-
     bool send_packet(const packet& pkt, const sockaddr_in& client_addr) {
         // 這裡簡單只發送 seqId，實際你會序列化 header + payload
         uint32_t seq = htonl(pkt.hdr.seqId);
-        return send_to(client_addr, reinterpret_cast<uint8_t*>(&seq), sizeof(seq));
+        bool sent = send_to(client_addr, reinterpret_cast<const uint8_t*>(&seq), sizeof(seq));
+        if (sent) {
+            notify_send(pkt, client_addr);
+        } else {
+            std::cerr << "Failed to send packet to client\n";
+        }
+        return sent;
     }
 
 private:
@@ -168,11 +191,7 @@ private:
                     // 記錄 client 存活時間
                     clients[client_addr] = std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::steady_clock::now().time_since_epoch()).count();
-
-                    // 通知 plugins 處理
-                    for (auto& plugin : plugins) {
-                        plugin->on_receive(pkt, client_addr);
-                    }
+                    notify_receive(pkt, client_addr);
                 } else {
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 }
@@ -209,8 +228,14 @@ public:
     }
 
     bool send_packet(const packet& pkt) {
-        uint32_t seq = htonl(pkt.hdr.seqId);
-        return send_to(server_addr, reinterpret_cast<uint8_t*>(&seq), sizeof(seq));
+        bool sent = send_to(server_addr, PacketHelper::to_bytes(pkt).data(), PacketHelper::to_bytes(pkt).size());
+        if (sent) {
+            notify_send(pkt, server_addr);
+        } else {
+            std::cerr << "Failed to send packet to server\n";   
+        }
+
+        return sent;
     }
 
     // 你可以自行加 receive 相關函式

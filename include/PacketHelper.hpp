@@ -37,13 +37,18 @@ public:
         return pkt;
     }
 
-    static packet create_data_packet(uint16_t seqId, const std::vector<uint8_t>& data) {
+    static packet create_data_packet(uint32_t seqId, const std::vector<uint8_t>& data) {
         packet pkt;
+        pkt.hdr.MAGIC = 0xABCD1234;
+        pkt.hdr.VERSION = 1;
+
         pkt.hdr.flags = 0x01; // 可根據需要設定 Data Packet flag
+        pkt.hdr.type = RudpPacketType::DATA; // 假設你有這個 enum
         pkt.hdr.seqId = seqId;
         pkt.hdr.ackId = 0; // 預設為 0，依需求設定
-        pkt.hdr.length = static_cast<uint16_t>(data.size());
+        pkt.hdr.length = static_cast<uint32_t>(data.size());
         pkt.payload = data;
+
         return pkt;
     }
 

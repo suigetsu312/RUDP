@@ -23,8 +23,8 @@ enum class RudpPacketType : uint8_t {
 
 #pragma pack(push, 1) // Ensure no padding is added to the structure
 struct header {
-    static constexpr uint32_t MAGIC = 0xABCD1234;
-    static constexpr uint8_t VERSION = 1;
+    uint32_t MAGIC = 0xABCD1234;
+    uint8_t VERSION = 1;
     RudpPacketType type;           // 是資料還是控制封包？
     uint16_t flags;                // 可用 bitmask 設定更多行為（壓縮、加密等）
     uint32_t seqId;                // 序列號
