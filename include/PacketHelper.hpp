@@ -35,16 +35,19 @@ public:
 
         return pkt;
     }
-
+    /// @brief Create a mock data packet for testing or simulation purposes.
+    /// @param seqId 
+    /// @param data 
+    /// @return 
     static packet create_data_packet(uint32_t seqId, const std::vector<uint8_t>& data) {
         packet pkt;
         pkt.hdr.MAGIC = 0xABCD1234;
         pkt.hdr.VERSION = 1;
 
-        pkt.hdr.flags = 0x01; // 可根據需要設定 Data Packet flag
-        pkt.hdr.type = RudpPacketType::DATA; // 假設你有這個 enum
+        pkt.hdr.flags = 0x01; 
+        pkt.hdr.type = RudpPacketType::DATA; 
         pkt.hdr.seqId = seqId;
-        pkt.hdr.ackId = 0; // 預設為 0，依需求設定
+        pkt.hdr.ackId = 0; 
         pkt.hdr.length = static_cast<uint32_t>(data.size());
         pkt.payload = data;
 

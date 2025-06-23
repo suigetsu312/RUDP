@@ -21,21 +21,21 @@ enum class RudpPacketType : uint8_t {
     HEARTBEAT
 };
 
-#pragma pack(push, 1) // Ensure no padding is added to the structure
+#pragma pack(push, 1) 
 struct header {
     uint32_t MAGIC = 0xABCD1234;
     uint8_t VERSION = 1;
-    RudpPacketType type;           // 是資料還是控制封包？
-    uint16_t flags;                // 可用 bitmask 設定更多行為（壓縮、加密等）
-    uint32_t seqId;                // 序列號
-    uint32_t ackId;                // ACK 回報號
-    uint32_t length;               // payload 長度
+    RudpPacketType type;          
+    uint16_t flags;               
+    uint32_t seqId;               
+    uint32_t ackId;                
+    uint32_t length;            
 };
-#pragma pack(pop) // Restore the previous packing alignment
+#pragma pack(pop) 
 
 struct packet {
-    header hdr; // Header of the packet
-    std::vector<uint8_t> payload; // Pointer to the payload data
+    header hdr; 
+    std::vector<uint8_t> payload; 
 };
 
 
