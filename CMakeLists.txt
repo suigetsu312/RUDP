@@ -3,7 +3,7 @@ project(RUDP)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
+set(CMAKE_CXX_FLAGS_DEBUG "-g")
 # Source and header includes
 file(GLOB_RECURSE SOURCE_FILES "src/*.cpp")
 

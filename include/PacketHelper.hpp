@@ -1,4 +1,3 @@
-// PacketHelper.hpp
 #ifndef PACKET_HELPER_CPP
 #define PACKET_HELPER_CPP
 

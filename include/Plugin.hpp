@@ -1,12 +1,13 @@
-// ConsoleLogPlugin.hpp
-#ifndef RUDP_CONSOLE_LOG_PLUGIN_HPP
-#define RUDP_CONSOLE_LOG_PLUGIN_HPP
-
-#include "protocol.hpp"
-#include "RudpSocket.hpp"
+#ifndef PLUGIN_HPP
+#define PLUGIN_HPP
+#include "SocketTools.hpp"
 #include "PacketHelper.hpp"
 #include <iostream>
-#include <netinet/in.h>
+struct IRudpPlugin {
+    virtual void on_receive(const packet& pkt, const sockaddr_in& client_addr) = 0;
+    virtual void on_send(const packet& pkt, const sockaddr_in& client_addr) = 0;
+    virtual ~IRudpPlugin() = default;
+};
 
 struct ConsoleLogPlugin : public IRudpPlugin {
     std::string name;
@@ -31,5 +32,6 @@ struct ConsoleLogPlugin : public IRudpPlugin {
                   << "\n";
     }
 };
+
 
 #endif

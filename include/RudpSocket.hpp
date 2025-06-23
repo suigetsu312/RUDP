@@ -12,37 +12,8 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
-
-#ifdef _WIN32
-#include <winsock2.h>
-#pragma comment(lib, "ws2_32.lib")
-#else
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#define SOCKET int
-#define INVALID_SOCKET (-1)
-#define SOCKET_ERROR (-1)
-#endif
-
-
-struct IRudpPlugin {
-    virtual void on_receive(const packet& pkt, const sockaddr_in& client_addr) = 0;
-    virtual void on_send(const packet& pkt, const sockaddr_in& client_addr) = 0;
-    virtual ~IRudpPlugin() = default;
-};
-
-struct sockaddr_in_hash {
-    std::size_t operator()(const sockaddr_in& addr) const {
-        return std::hash<uint32_t>()(addr.sin_addr.s_addr) ^ std::hash<uint16_t>()(addr.sin_port);
-    }
-};
-
-struct sockaddr_in_equal {
-    bool operator()(const sockaddr_in& lhs, const sockaddr_in& rhs) const {
-        return lhs.sin_addr.s_addr == rhs.sin_addr.s_addr && lhs.sin_port == rhs.sin_port;
-    }
-};
+#include "Plugin.hpp"
+#include "SocketTools.hpp"
 
 class UdpSocketBase {
 protected:
@@ -161,9 +132,7 @@ public:
     }
 
     bool send_packet(const packet& pkt, const sockaddr_in& client_addr) {
-        // 這裡簡單只發送 seqId，實際你會序列化 header + payload
-        uint32_t seq = htonl(pkt.hdr.seqId);
-        bool sent = send_to(client_addr, reinterpret_cast<const uint8_t*>(&seq), sizeof(seq));
+        bool sent = send_to(client_addr, PacketHelper::to_bytes(pkt).data(), PacketHelper::to_bytes(pkt).size());
         if (sent) {
             notify_send(pkt, client_addr);
         } else {
@@ -173,10 +142,20 @@ public:
     }
 
 private:
-    void receive_loop() {
+void receive_loop() {
+    while (running) {
+        try {
+            fd_set readfds;
+            FD_ZERO(&readfds);
+            FD_SET(sock, &readfds);
 
-        while (running) {
-            try {
+            struct timeval timeout;
+            timeout.tv_sec = 0;
+            timeout.tv_usec = 10000; // 10ms
+
+            int activity = select(sock + 1, &readfds, nullptr, nullptr, &timeout);
+
+            if (activity > 0 && FD_ISSET(sock, &readfds)) {
                 uint8_t buffer[1500];
                 sockaddr_in client_addr{};
                 socklen_t addr_len = sizeof(client_addr);
@@ -185,35 +164,34 @@ private:
                                         (sockaddr*)&client_addr, &addr_len);
 
                 if (recv_len > 0) {
-                    // 解析封包
                     packet pkt = PacketHelper::from_bytes(buffer, recv_len);
 
-                    // 記錄 client 存活時間
                     clients[client_addr] = std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::steady_clock::now().time_since_epoch()).count();
                     notify_receive(pkt, client_addr);
-                } else {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 }
-            } catch (const std::exception& ex) {
-                std::cerr << "[Server] receive_loop exception: " << ex.what() << std::endl;
-            } catch (...) {
-                std::cerr << "[Server] receive_loop unknown exception\n";
             }
+            // else: timeout, loop again and check `running`
+        } catch (const std::exception& ex) {
+            std::cerr << "[Server] receive_loop exception: " << ex.what() << std::endl;
+        } catch (...) {
+            std::cerr << "[Server] receive_loop unknown exception\n";
         }
     }
+}
 
 };
 
 // ------ UDP Client --------
 
 class UdpClient : public UdpSocketBase {
-    sockaddr_in server_addr{};
 
 public:
     UdpClient() = default;
-
-    bool connect_to(const char* ip, uint16_t port) {
+    ~UdpClient() {
+        stop();
+    }
+    bool start(const char* ip, uint16_t port) {
         if (!open_socket()) return false;
 
         memset(&server_addr, 0, sizeof(server_addr));
@@ -224,9 +202,24 @@ public:
         inet_pton(AF_INET, ip, &server_addr.sin_addr);
 #endif
         server_addr.sin_port = htons(port);
+
+        running = true;
+        recv_thread = std::thread(&UdpClient::receive_loop, this);
+        std::cout << "Client starting to listen msg from server\n";
+
         return true;
     }
+    void stop() {
 
+        if (running) {
+            running = false;
+            if (recv_thread.joinable())
+                recv_thread.join();
+            close_socket();
+            std::cout << "Client stopped\n";
+        }
+    }
+    
     bool send_packet(const packet& pkt) {
         bool sent = send_to(server_addr, PacketHelper::to_bytes(pkt).data(), PacketHelper::to_bytes(pkt).size());
         if (sent) {
@@ -234,11 +227,55 @@ public:
         } else {
             std::cerr << "Failed to send packet to server\n";   
         }
-
         return sent;
     }
 
-    // 你可以自行加 receive 相關函式
+private:
+    sockaddr_in server_addr{};
+    std::atomic<bool> running{false};
+    std::thread recv_thread;
+
+    void receive_loop() {
+        fd_set readfds;
+        struct timeval timeout;
+
+        while (running) {
+
+            try
+            {
+                FD_ZERO(&readfds);
+                FD_SET(sock, &readfds);
+
+                timeout.tv_sec = 0;
+                timeout.tv_usec = 10000; // 10ms
+
+                int activity = select(sock + 1, &readfds, nullptr, nullptr, &timeout);
+
+                if (activity > 0 && FD_ISSET(sock, &readfds)) {
+                    uint8_t buffer[1500];
+                    socklen_t addr_len = sizeof(server_addr);
+
+                    int recv_len = recvfrom(sock, reinterpret_cast<char*>(buffer), sizeof(buffer), 0,
+                                            (sockaddr*)&server_addr, &addr_len);
+
+                    if (recv_len > 0) {
+                        packet pkt = PacketHelper::from_bytes(buffer, recv_len);
+                        notify_receive(pkt, server_addr);
+                    }
+                }
+
+            }
+            catch (const std::exception& ex) 
+            {
+                std::cerr << "[Client] receive_loop exception: " << ex.what() << std::endl;
+            } catch (...) {
+                std::cerr << "[Client] receive_loop unknown exception\n";
+            }
+        }
+   
+    }
+
+
 };
 
 
