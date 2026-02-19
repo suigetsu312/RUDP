@@ -15,13 +15,11 @@ namespace {
         return x;
     }
 
-    std::atomic<uint32_t> g_nextConnId{
-        #ifdef RUDP_DEBUG_DETERMINISTIC_CONNID
-        kMinConnId
-        #else
-        MakeRandomBase()
-        #endif
-    };
+    #ifdef RUDP_DEBUG_DETERMINISTIC_CONNID
+    static std::atomic<uint32_t> g_nextConnId{kMinConnId};
+    #else
+    static std::atomic<uint32_t> g_nextConnId{MakeRandomBase()};
+    #endif
 
     uint32_t NextConnId(){
         uint32_t id = g_nextConnId.fetch_add(1, std::memory_order_relaxed);
