@@ -28,13 +28,15 @@ endif()
 # -----------------------
 # Library target (headers-only core)
 # -----------------------
-add_library(rudp_core INTERFACE)
+add_library(rudp_core STATIC
+  src/Session.cpp
+)
 
-target_include_directories(rudp_core INTERFACE
+target_include_directories(rudp_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 
-target_link_libraries(rudp_core INTERFACE
+target_link_libraries(rudp_core PUBLIC
   Threads::Threads
   spdlog::spdlog
 )
@@ -62,6 +64,8 @@ if (RUDP_BUILD_TESTS)
   add_executable(unit_tests
     tests/test_utils_endian.cpp
     tests/test_codec_header_v1.cpp
+    tests/test_session_client_handshake.cpp
+    tests/test_session_tick.cpp
   )
 
   target_link_libraries(unit_tests PRIVATE
