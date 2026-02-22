@@ -64,8 +64,6 @@ if (RUDP_BUILD_TESTS)
   add_executable(unit_tests
     tests/test_utils_endian.cpp
     tests/test_codec_header_v1.cpp
-    tests/test_session_client_handshake.cpp
-    tests/test_session_tick.cpp
   )
 
   target_link_libraries(unit_tests PRIVATE

@@ -1,5 +1,6 @@
 #ifndef RUDP_CODEC_HPP
 #define RUDP_CODEC_HPP
+
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -9,56 +10,107 @@
 
 namespace Rudp::Codec {
 
-inline bool EncodeHeaderV1(const Rudp::Protocol::HeaderV1& header,
+struct DecodedPacketV1 {
+    Rudp::Protocol::HeaderV1 header;
+    std::span<const uint8_t> payload; // bytes after the fixed 28-byte header
+};
+
+// Encode fixed 28-byte header (v1.1). Payload is NOT encoded here.
+inline bool EncodeHeaderV1(const Rudp::Protocol::HeaderV1& h,
                            std::span<uint8_t> out) noexcept
 {
     using namespace Rudp::Protocol;
     using namespace Rudp::Utils;
 
-    if (out.size() < HeaderV1Length) return false;
+    if (out.size() < HeaderLenV1) return false;
 
-    if (!WriteU32BE(out, OffConnId, header.ConnId)) return false;
-    if (!WriteU32BE(out, OffSeq, header.Seq)) return false;
-    if (!WriteU32BE(out, OffAck, header.Ack)) return false;
-    if (!WriteU64BE(out, OffAckBits, header.AckBits)) return false;
-    if (!WriteU32BE(out, OffTimestampMs, header.TimestampMs)) return false;
+    // Spec-required fixed values
+    // Caller can set these, but encoder enforces them for safety.
+    const uint8_t headerLen = HeaderLenV1;
+    const uint8_t reserved  = 0;
 
-    out[OffChannelId] = header.ChannelId;
-    out[OffReserved]  = 0;
+    // Reserved flag bits must be 0
+    if ((h.Flags & 0xC0) != 0) return false; // 0x40/0x80
 
-    if (!WriteU16BE(out, OffPayloadLen, header.PayloadLen)) return false;
+    // ChannelType range check (0..3)
+    const auto ct = static_cast<uint8_t>(h.ChType);
+    if (ct > 3) return false;
+
+    // Non-reliable packets MUST set Seq=0 (strict)
+    if (!IsReliableChannel(h.ChType) && !IsControlFrame(h.Flags)) {
+        if (h.Seq != 0) return false;
+    }
+
+    if (!WriteU32BE(out, OffConnId,    h.ConnId))  return false;
+    if (!WriteU32BE(out, OffSeq,       h.Seq))     return false;
+    if (!WriteU32BE(out, OffAck,       h.Ack))     return false;
+    if (!WriteU64BE(out, OffAckBits,   h.AckBits)) return false;
+    if (!WriteU32BE(out, OffChannelId, h.ChannelId)) return false;
+
+    out[OffChannelType] = ct;
+    out[OffFlags]       = h.Flags;
+    out[OffHeaderLen]   = headerLen;
+    out[OffReserved]    = reserved;
 
     return true;
 }
 
-// Validates: HeaderV1Length + PayloadLen <= datagram length
 inline std::optional<Rudp::Protocol::HeaderV1>
 DecodeHeaderV1(std::span<const uint8_t> in) noexcept
 {
     using namespace Rudp::Protocol;
     using namespace Rudp::Utils;
 
-    if (in.size() < HeaderV1Length) return std::nullopt;
+    if (in.size() < HeaderLenV1) return std::nullopt;
 
-    HeaderV1 header{};
+    HeaderV1 h{};
 
-    if (!ReadU32BE(in, OffConnId, header.ConnId)) return std::nullopt;
-    if (!ReadU32BE(in, OffSeq, header.Seq)) return std::nullopt;
-    if (!ReadU32BE(in, OffAck, header.Ack)) return std::nullopt;
-    if (!ReadU64BE(in, OffAckBits, header.AckBits)) return std::nullopt;
-    if (!ReadU32BE(in, OffTimestampMs, header.TimestampMs)) return std::nullopt;
+    if (!ReadU32BE(in, OffConnId,    h.ConnId))  return std::nullopt;
+    if (!ReadU32BE(in, OffSeq,       h.Seq))     return std::nullopt;
+    if (!ReadU32BE(in, OffAck,       h.Ack))     return std::nullopt;
+    if (!ReadU64BE(in, OffAckBits,   h.AckBits)) return std::nullopt;
+    if (!ReadU32BE(in, OffChannelId, h.ChannelId)) return std::nullopt;
 
-    header.ChannelId = in[OffChannelId];
+    const uint8_t ct = in[OffChannelType];
+    const uint8_t fl = in[OffFlags];
+    const uint8_t hl = in[OffHeaderLen];
+    const uint8_t rs = in[OffReserved];
 
-    uint16_t payloadLen = 0;
-    if (!ReadU16BE(in, OffPayloadLen, payloadLen)) return std::nullopt;
-    header.PayloadLen = payloadLen;
+    // Validation (v1.1)
+    if (hl != HeaderLenV1) return std::nullopt;
+    if (rs != 0) return std::nullopt;
+    if ((fl & 0xC0) != 0) return std::nullopt; // reserved flag bits must be 0
+    if (ct > 3) return std::nullopt;
 
-    if (HeaderV1Length + static_cast<size_t>(header.PayloadLen) > in.size())
-        return std::nullopt;
+    h.ChType    = static_cast<ChannelType>(ct);
+    h.Flags     = fl;
+    h.HeaderLen = hl;
+    h.Reserved  = rs;
 
-    return header;
+    // Non-reliable packets MUST set Seq=0 (strict)
+    if (!IsReliableChannel(h.ChType) && !IsControlFrame(h.Flags)) {
+        if (h.Seq != 0) return std::nullopt;
+    }
+
+    return h;
+}
+
+// Decode header + return payload view (payload length is derived from UDP datagram length)
+inline std::optional<DecodedPacketV1>
+DecodePacketV1(std::span<const uint8_t> in) noexcept
+{
+    using namespace Rudp::Protocol;
+
+    auto hdr = DecodeHeaderV1(in);
+    if (!hdr) return std::nullopt;
+
+    DecodedPacketV1 pkt{};
+    pkt.header  = *hdr;
+    pkt.payload = in.subspan(HeaderLenV1); // remainder is payload
+
+    return pkt;
 }
 
 } // namespace Rudp::Codec
+
 #endif

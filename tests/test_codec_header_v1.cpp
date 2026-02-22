@@ -1,96 +1,142 @@
 #include <gtest/gtest.h>
-#include <cstdint>
-#include <vector>
 #include <array>
+#include <vector>
 
 #include "Rudp/Protocol.hpp"
 #include "Rudp/Codec.hpp"
 
-using namespace Rudp;
+using namespace Rudp::Protocol;
+using namespace Rudp::Codec;
 
-TEST(CodecHeaderV1, EncodeDecodeRoundTrip) {
-    Protocol::HeaderV1 h{};
-    h.ConnId = 0xAABBCCDDu;
-    h.Seq = 123456u;
-    h.Ack = 120000u;
-    h.AckBits = 0xFEDCBA9876543210ull;
-    h.TimestampMs = 987654321u;
-    h.ChannelId = 7;
-    h.PayloadLen = 5;
+namespace {
 
-    std::vector<uint8_t> pkt(Protocol::HeaderV1Length + h.PayloadLen);
-    ASSERT_TRUE(Codec::EncodeHeaderV1(h, pkt));
+constexpr std::size_t kBufSize = 1500;
 
-    auto decoded = Codec::DecodeHeaderV1(pkt);
+HeaderV1 MakeBaseReliableHeader() {
+    HeaderV1 h{};
+    h.ConnId    = 0x11223344;
+    h.Seq       = 100;
+    h.Ack       = 50;
+    h.AckBits   = 0xAABBCCDDEEFF0011ull;
+    h.ChannelId = 42;
+    h.ChType    = ChannelType::ReliableOrdered;
+    h.Flags     = 0;
+    h.HeaderLen = HeaderLenV1;
+    h.Reserved  = 0;
+    return h;
+}
+
+} // namespace
+
+TEST(CodecHeaderV1, EncodeDecodeRoundTrip_Reliable)
+{
+    std::array<uint8_t, kBufSize> buf{};
+    auto h = MakeBaseReliableHeader();
+
+    ASSERT_TRUE(EncodeHeaderV1(h, buf));
+
+    auto decoded = DecodeHeaderV1(buf);
     ASSERT_TRUE(decoded.has_value());
 
-    const auto& d = decoded.value();
-    EXPECT_EQ(d.ConnId, h.ConnId);
-    EXPECT_EQ(d.Seq, h.Seq);
-    EXPECT_EQ(d.Ack, h.Ack);
-    EXPECT_EQ(d.AckBits, h.AckBits);
-    EXPECT_EQ(d.TimestampMs, h.TimestampMs);
-    EXPECT_EQ(d.ChannelId, h.ChannelId);
-    EXPECT_EQ(d.PayloadLen, h.PayloadLen);
+    EXPECT_EQ(decoded->ConnId, h.ConnId);
+    EXPECT_EQ(decoded->Seq, h.Seq);
+    EXPECT_EQ(decoded->Ack, h.Ack);
+    EXPECT_EQ(decoded->AckBits, h.AckBits);
+    EXPECT_EQ(decoded->ChannelId, h.ChannelId);
+    EXPECT_EQ(decoded->ChType, h.ChType);
+    EXPECT_EQ(decoded->Flags, h.Flags);
 }
 
-TEST(CodecHeaderV1, RejectsTooShortDatagram) {
-    std::vector<uint8_t> pkt(Protocol::HeaderV1Length - 1);
-    auto decoded = Codec::DecodeHeaderV1(pkt);
+TEST(CodecHeaderV1, NonReliableMustHaveSeqZero)
+{
+    std::array<uint8_t, kBufSize> buf{};
+
+    auto h = MakeBaseReliableHeader();
+    h.ChType = ChannelType::Unreliable;
+    h.Seq = 123; // invalid per spec
+
+    EXPECT_FALSE(EncodeHeaderV1(h, buf));
+}
+
+TEST(CodecHeaderV1, ReliableAllowsNonZeroSeq)
+{
+    std::array<uint8_t, kBufSize> buf{};
+
+    auto h = MakeBaseReliableHeader();
+    h.Seq = 999;
+
+    EXPECT_TRUE(EncodeHeaderV1(h, buf));
+}
+
+TEST(CodecHeaderV1, HeaderLenMustBe28)
+{
+    std::array<uint8_t, kBufSize> buf{};
+
+    auto h = MakeBaseReliableHeader();
+    ASSERT_TRUE(EncodeHeaderV1(h, buf));
+
+    buf[OffHeaderLen] = 27; // corrupt
+
+    auto decoded = DecodeHeaderV1(buf);
     EXPECT_FALSE(decoded.has_value());
 }
 
-TEST(CodecHeaderV1, RejectsTruncatedPayload) {
-    Protocol::HeaderV1 h{};
-    h.ConnId = 1;
-    h.Seq = 2;
-    h.Ack = 0;
-    h.AckBits = 0;
-    h.TimestampMs = 0;
-    h.ChannelId = 1;
-    h.PayloadLen = 10; // claims 10 bytes payload
+TEST(CodecHeaderV1, ReservedMustBeZero)
+{
+    std::array<uint8_t, kBufSize> buf{};
 
-    std::vector<uint8_t> pkt(Protocol::HeaderV1Length + 5); // truncated
-    ASSERT_TRUE(Codec::EncodeHeaderV1(h, pkt));
+    auto h = MakeBaseReliableHeader();
+    ASSERT_TRUE(EncodeHeaderV1(h, buf));
 
-    auto decoded = Codec::DecodeHeaderV1(pkt);
+    buf[OffReserved] = 1;
+
+    auto decoded = DecodeHeaderV1(buf);
     EXPECT_FALSE(decoded.has_value());
 }
 
-TEST(CodecHeaderV1, EncodeFailsIfOutBufferTooSmall) {
-    Protocol::HeaderV1 h{};
-    h.ConnId = 1;
-    h.Seq = 1;
-    h.Ack = 0;
-    h.AckBits = 0;
-    h.TimestampMs = 0;
-    h.ChannelId = 1;
-    h.PayloadLen = 0;
+TEST(CodecHeaderV1, ReservedFlagBitsMustBeZero)
+{
+    std::array<uint8_t, kBufSize> buf{};
 
-    std::vector<uint8_t> out(Protocol::HeaderV1Length - 1);
-    EXPECT_FALSE(Codec::EncodeHeaderV1(h, out));
+    auto h = MakeBaseReliableHeader();
+    h.Flags = 0x40; // reserved bit
+
+    EXPECT_FALSE(EncodeHeaderV1(h, buf));
 }
 
-// Strong endian regression: decode known big-endian bytes
-TEST(CodecHeaderV1, DecodeKnownBigEndianBytes) {
-    std::array<uint8_t, Protocol::HeaderV1Length> b{};
+TEST(CodecHeaderV1, ChannelTypeOutOfRangeFails)
+{
+    std::array<uint8_t, kBufSize> buf{};
 
-    b[0]=0x11; b[1]=0x22; b[2]=0x33; b[3]=0x44;          // ConnId
-    b[4]=0x01; b[5]=0x02; b[6]=0x03; b[7]=0x04;          // Seq
-    b[8]=0x0A; b[9]=0x0B; b[10]=0x0C; b[11]=0x0D;        // Ack
-    b[12]=0x01; b[13]=0x02; b[14]=0x03; b[15]=0x04;      // AckBits
-    b[16]=0x05; b[17]=0x06; b[18]=0x07; b[19]=0x08;
-    b[20]=0xA1; b[21]=0xA2; b[22]=0xA3; b[23]=0xA4;      // TimestampMs
-    b[24]=0x07; b[25]=0x00;                               // ChannelId, Reserved
-    b[26]=0x00; b[27]=0x00;                               // PayloadLen = 16
+    auto h = MakeBaseReliableHeader();
+    h.ChType = static_cast<ChannelType>(99);
 
-    auto h = Codec::DecodeHeaderV1(b);
-    ASSERT_TRUE(h.has_value());
-    EXPECT_EQ(h->ConnId, 0x11223344u);
-    EXPECT_EQ(h->Seq, 0x01020304u);
-    EXPECT_EQ(h->Ack, 0x0A0B0C0Du);
-    EXPECT_EQ(h->AckBits, 0x0102030405060708ull);
-    EXPECT_EQ(h->TimestampMs, 0xA1A2A3A4u);
-    EXPECT_EQ(h->ChannelId, 7);
-    EXPECT_EQ(h->PayloadLen, 0);
+    EXPECT_FALSE(EncodeHeaderV1(h, buf));
+}
+
+TEST(CodecHeaderV1, DecodePacketReturnsPayloadSpan)
+{
+    std::vector<uint8_t> buf(HeaderLenV1 + 10);
+
+    auto h = MakeBaseReliableHeader();
+    ASSERT_TRUE(EncodeHeaderV1(h, buf));
+
+    // fake payload
+    for (size_t i = 0; i < 10; ++i)
+        buf[HeaderLenV1 + i] = static_cast<uint8_t>(i);
+
+    auto pkt = DecodePacketV1(buf);
+    ASSERT_TRUE(pkt.has_value());
+
+    EXPECT_EQ(pkt->payload.size(), 10);
+    for (size_t i = 0; i < 10; ++i)
+        EXPECT_EQ(pkt->payload[i], i);
+}
+
+TEST(CodecHeaderV1, ShortBufferFails)
+{
+    std::array<uint8_t, 10> smallBuf{};
+
+    auto decoded = DecodeHeaderV1(smallBuf);
+    EXPECT_FALSE(decoded.has_value());
 }
