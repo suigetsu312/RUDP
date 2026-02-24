@@ -15,10 +15,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(RUDP_BUILD_TESTS "Build unit tests" ON)
 
 # -----------------------
-# Dependencies (via vcpkg toolchain)
+# Dependencies
 # -----------------------
 find_package(Threads REQUIRED)
-find_package(spdlog CONFIG REQUIRED)
 
 if (RUDP_BUILD_TESTS)
   enable_testing()
@@ -26,26 +25,30 @@ if (RUDP_BUILD_TESTS)
 endif()
 
 # -----------------------
-# Library target (headers-only core)
+# Library target (core)
 # -----------------------
 add_library(rudp_core STATIC
-  src/Session.cpp
+  src/ReliableRx.cpp
+  # add more .cpp here later:
+  # src/Codec.cpp
+  # src/ReliableTx.cpp
+  # src/Session.cpp
 )
 
 target_include_directories(rudp_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 
+# Threads is part of the public surface if headers expose it (usually fine as PUBLIC).
 target_link_libraries(rudp_core PUBLIC
   Threads::Threads
-  spdlog::spdlog
 )
 
-# Warnings (apply to consumers)
+# Warnings: keep them local to the target (do NOT propagate to consumers).
 if (MSVC)
-  target_compile_options(rudp_core INTERFACE /W4 /permissive-)
+  target_compile_options(rudp_core PRIVATE /W4 /permissive-)
 else()
-  target_compile_options(rudp_core INTERFACE -Wall -Wextra -Wpedantic)
+  target_compile_options(rudp_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 # -----------------------
@@ -55,7 +58,9 @@ add_executable(rudp_app
   src/main.cpp
 )
 
-target_link_libraries(rudp_app PRIVATE rudp_core)
+target_link_libraries(rudp_app PRIVATE
+  rudp_core
+)
 
 # -----------------------
 # Tests
@@ -64,6 +69,7 @@ if (RUDP_BUILD_TESTS)
   add_executable(unit_tests
     tests/test_utils_endian.cpp
     tests/test_codec_header_v1.cpp
+    tests/test_reliable_rx.cpp
   )
 
   target_link_libraries(unit_tests PRIVATE
