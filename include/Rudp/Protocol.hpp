@@ -1,96 +1,84 @@
-#ifndef RUDP_PROTOCOL_HPP
-#define RUDP_PROTOCOL_HPP
+#pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
+#include <vector>
 
-namespace Rudp::Protocol {
+namespace Rudp {
 
-// Wire byte order: Big-endian (network order)
-// Fixed header: 28 bytes (v1.1)
+constexpr std::uint8_t kHeaderLength = 28;
+constexpr std::size_t kAckBitsWindow = 64;
+constexpr std::size_t kReliableWindowSize = 64;
 
-inline constexpr uint8_t VersionV1_1 = 1; // spec version tag (not on-wire unless you add options)
-
-inline constexpr std::size_t AckBitsWidth = 64;
-inline constexpr std::size_t HeaderLenV1  = 28;
-
-// ChannelType values (v1.1)
-enum class ChannelType : uint8_t {
-    ReliableOrdered   = 0,
-    ReliableUnordered = 1,
-    Unreliable        = 2,
-    MonotonicState    = 3,
+enum class ChannelType : std::uint8_t {
+  ReliableOrdered = 0,
+  ReliableUnordered = 1,
+  Unreliable = 2,
+  MonotonicState = 3,
 };
 
-// Flags (v1.1)
-enum class Flags : uint8_t {
-    Syn    = 0x01,
-    HskAck = 0x02,
-    Fin    = 0x04,
-    Rst    = 0x08,
-    Ping   = 0x10,
-    Pong   = 0x20,
+enum class Flag : std::uint8_t {
+  Syn = 0x01,
+  HandshakeAck = 0x02,
+  Fin = 0x04,
+  Rst = 0x08,
+  Ping = 0x10,
+  Pong = 0x20,
 };
 
-inline constexpr uint8_t ToU8(Flags f) noexcept { return static_cast<uint8_t>(f); }
+using Flags = std::uint8_t;
 
-// Logical header fields (not an on-wire struct; use Codec to encode/decode)
-struct HeaderV1 {
-    uint32_t   ConnId;
-    uint32_t   Seq;        // reliable seq; MUST be 0 for non-reliable packets
-    uint32_t   Ack;        // next expected reliable seq
-    uint64_t   AckBits;    // forward bitmap: bit i => seq = Ack + i + 1
-    uint32_t   ChannelId;
-    ChannelType ChType;
-    uint8_t    Flags;      // bitset (see enum Flags)
-    uint8_t    HeaderLen;  // MUST be 28 in v1.1
-    uint8_t    Reserved;   // MUST be 0
+struct Header final {
+  std::uint32_t conn_id = 0;
+  std::uint32_t seq = 0;
+  std::uint32_t ack = 0;
+  std::uint64_t ack_bits = 0;
+  std::uint32_t channel_id = 0;
+  ChannelType channel_type = ChannelType::Unreliable;
+  Flags flags = 0;
+  std::uint8_t header_len = kHeaderLength;
+  std::uint8_t reserved = 0;
+
+  [[nodiscard]] bool hasFlag(Flag flag) const noexcept;
 };
 
-// Wire layout offsets (bytes):
-//  0  : U32 ConnId
-//  4  : U32 Seq
-//  8  : U32 Ack
-// 12  : U64 AckBits
-// 20  : U32 ChannelId
-// 24  : U8  ChannelType
-// 25  : U8  Flags
-// 26  : U8  HeaderLen
-// 27  : U8  Reserved
-inline constexpr std::size_t OffConnId     = 0;
-inline constexpr std::size_t OffSeq        = 4;
-inline constexpr std::size_t OffAck        = 8;
-inline constexpr std::size_t OffAckBits    = 12;
-inline constexpr std::size_t OffChannelId  = 20;
-inline constexpr std::size_t OffChannelType= 24;
-inline constexpr std::size_t OffFlags      = 25;
-inline constexpr std::size_t OffHeaderLen  = 26;
-inline constexpr std::size_t OffReserved   = 27;
+struct PacketView final {
+  Header header;
+  std::span<const std::byte> payload;
+};
 
-// Modulo-2^32 ordering helpers
-inline constexpr bool SeqLt(uint32_t a, uint32_t b) noexcept {
-    return static_cast<int32_t>(a - b) < 0;
-}
-inline constexpr bool SeqLe(uint32_t a, uint32_t b) noexcept {
-    return static_cast<int32_t>(a - b) <= 0;
-}
-inline constexpr bool SeqGt(uint32_t a, uint32_t b) noexcept {
-    return static_cast<int32_t>(a - b) > 0;
-}
-inline constexpr bool SeqGe(uint32_t a, uint32_t b) noexcept {
-    return static_cast<int32_t>(a - b) >= 0;
+[[nodiscard]] constexpr bool seq_lt(std::uint32_t lhs,
+                                    std::uint32_t rhs) noexcept {
+  return static_cast<std::int32_t>(lhs - rhs) < 0;
 }
 
-// Predicate: whether this packet participates in reliable state updates
-inline constexpr bool IsReliableChannel(ChannelType t) noexcept {
-    return t == ChannelType::ReliableOrdered || t == ChannelType::ReliableUnordered;
+[[nodiscard]] constexpr bool seq_le(std::uint32_t lhs,
+                                    std::uint32_t rhs) noexcept {
+  return static_cast<std::int32_t>(lhs - rhs) <= 0;
 }
 
-// Connection-level control frames (handshake/FIN) also consume reliable seq.
-// In v1.1, this is represented by Flags (SYN/HSK_ACK/FIN/RST).
-inline constexpr bool IsControlFrame(uint8_t flags) noexcept {
-    return (flags & (ToU8(Flags::Syn) | ToU8(Flags::HskAck) | ToU8(Flags::Fin) | ToU8(Flags::Rst))) != 0;
+[[nodiscard]] constexpr bool seq_gt(std::uint32_t lhs,
+                                    std::uint32_t rhs) noexcept {
+  return seq_lt(rhs, lhs);
 }
 
-} // namespace Rudp::Protocol
-#endif
+[[nodiscard]] constexpr bool seq_ge(std::uint32_t lhs,
+                                    std::uint32_t rhs) noexcept {
+  return seq_le(rhs, lhs);
+}
+
+[[nodiscard]] constexpr bool isReliableChannel(ChannelType type) noexcept {
+  return type == ChannelType::ReliableOrdered ||
+         type == ChannelType::ReliableUnordered;
+}
+
+[[nodiscard]] constexpr Flags operator|(Flag lhs, Flag rhs) noexcept {
+  return static_cast<Flags>(static_cast<Flags>(lhs) | static_cast<Flags>(rhs));
+}
+
+[[nodiscard]] constexpr Flags operator|(Flags lhs, Flag rhs) noexcept {
+  return static_cast<Flags>(lhs | static_cast<Flags>(rhs));
+}
+
+}  // namespace Rudp

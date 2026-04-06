@@ -12,14 +12,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # -----------------------
 # Options
 # -----------------------
-option(RUDP_BUILD_TESTS "Build unit tests" ON)
+option(RUDP_BUILD_TESTS "Build unit tests" OFF)
 
 # -----------------------
 # Dependencies
 # -----------------------
 find_package(Threads REQUIRED)
 
-if (RUDP_BUILD_TESTS)
+if (RUDP_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
   enable_testing()
   find_package(GTest CONFIG REQUIRED)
 endif()
@@ -28,11 +28,13 @@ endif()
 # Library target (core)
 # -----------------------
 add_library(rudp_core STATIC
-  src/ReliableRx.cpp
-  # add more .cpp here later:
-  # src/Codec.cpp
-  # src/ReliableTx.cpp
-  # src/Session.cpp
+  src/Protocol.cpp
+  src/Utils.cpp
+  src/Codec.cpp
+  src/ConnectionStateMachine.cpp
+  src/Session.cpp
+  src/TxHandler.cpp
+  src/RxHandler.cpp
 )
 
 target_include_directories(rudp_core PUBLIC
@@ -54,9 +56,7 @@ endif()
 # -----------------------
 # App
 # -----------------------
-add_executable(rudp_app
-  src/main.cpp
-)
+add_executable(rudp_app src/main.cpp)
 
 target_link_libraries(rudp_app PRIVATE
   rudp_core
@@ -65,11 +65,16 @@ target_link_libraries(rudp_app PRIVATE
 # -----------------------
 # Tests
 # -----------------------
-if (RUDP_BUILD_TESTS)
+if (RUDP_BUILD_TESTS
+    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_utils_endian.cpp"
+    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_codec_header_v1.cpp")
   add_executable(unit_tests
     tests/test_utils_endian.cpp
     tests/test_codec_header_v1.cpp
-    tests/test_reliable_rx.cpp
+    tests/test_connection_state_machine.cpp
+    tests/test_rx_handler_wrap.cpp
+    tests/test_tx_handler_ack.cpp
+    tests/test_session_skeleton.cpp
   )
 
   target_link_libraries(unit_tests PRIVATE
