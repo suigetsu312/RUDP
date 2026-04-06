@@ -1,142 +1,106 @@
-#include <gtest/gtest.h>
 #include <array>
-#include <vector>
+#include <cstddef>
+#include <cstdint>
+#include <span>
 
-#include "Rudp/Protocol.hpp"
+#include <gtest/gtest.h>
+
 #include "Rudp/Codec.hpp"
-
-using namespace Rudp::Protocol;
-using namespace Rudp::Codec;
 
 namespace {
 
-constexpr std::size_t kBufSize = 1500;
+// Verifies a full encode/decode round-trip preserves every header field and
+// the payload bytes.
+TEST(CodecHeaderTest, EncodeDecodeRoundTripPreservesHeaderAndPayload) {
+  Rudp::Header header;
+  header.conn_id = 100u;
+  header.seq = 200u;
+  header.ack = 300u;
+  header.ack_bits = 0x55aa55aa55aa55aaULL;
+  header.channel_id = 400u;
+  header.channel_type = Rudp::ChannelType::ReliableOrdered;
+  header.flags = Rudp::Flag::Syn | Rudp::Flag::HandshakeAck;
 
-HeaderV1 MakeBaseReliableHeader() {
-    HeaderV1 h{};
-    h.ConnId    = 0x11223344;
-    h.Seq       = 100;
-    h.Ack       = 50;
-    h.AckBits   = 0xAABBCCDDEEFF0011ull;
-    h.ChannelId = 42;
-    h.ChType    = ChannelType::ReliableOrdered;
-    h.Flags     = 0;
-    h.HeaderLen = HeaderLenV1;
-    h.Reserved  = 0;
-    return h;
+  const std::array payload = {
+      std::byte{0xde},
+      std::byte{0xad},
+      std::byte{0xbe},
+      std::byte{0xef},
+  };
+
+  const auto bytes = Rudp::Codec::encode(header, payload);
+
+  const auto decoded = Rudp::Codec::decode(bytes);
+
+  ASSERT_TRUE(decoded.has_value());
+  EXPECT_EQ(decoded->header.conn_id, header.conn_id);
+  EXPECT_EQ(decoded->header.seq, header.seq);
+  EXPECT_EQ(decoded->header.ack, header.ack);
+  EXPECT_EQ(decoded->header.ack_bits, header.ack_bits);
+  EXPECT_EQ(decoded->header.channel_id, header.channel_id);
+  EXPECT_EQ(decoded->header.channel_type, header.channel_type);
+  EXPECT_EQ(decoded->header.flags, header.flags);
+  ASSERT_EQ(decoded->payload.size(), payload.size());
+  EXPECT_EQ(decoded->payload[0], payload[0]);
+  EXPECT_EQ(decoded->payload[1], payload[1]);
+  EXPECT_EQ(decoded->payload[2], payload[2]);
+  EXPECT_EQ(decoded->payload[3], payload[3]);
 }
 
-} // namespace
+// Verifies decode rejects buffers that are shorter than the fixed header size.
+TEST(CodecHeaderTest, DecodeRejectsShortBuffer) {
+  const std::array bytes = {
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+  };
 
-TEST(CodecHeaderV1, EncodeDecodeRoundTrip_Reliable)
-{
-    std::array<uint8_t, kBufSize> buf{};
-    auto h = MakeBaseReliableHeader();
+  const auto decoded = Rudp::Codec::decode(bytes);
 
-    ASSERT_TRUE(EncodeHeaderV1(h, buf));
-
-    auto decoded = DecodeHeaderV1(buf);
-    ASSERT_TRUE(decoded.has_value());
-
-    EXPECT_EQ(decoded->ConnId, h.ConnId);
-    EXPECT_EQ(decoded->Seq, h.Seq);
-    EXPECT_EQ(decoded->Ack, h.Ack);
-    EXPECT_EQ(decoded->AckBits, h.AckBits);
-    EXPECT_EQ(decoded->ChannelId, h.ChannelId);
-    EXPECT_EQ(decoded->ChType, h.ChType);
-    EXPECT_EQ(decoded->Flags, h.Flags);
+  EXPECT_FALSE(decoded.has_value());
 }
 
-TEST(CodecHeaderV1, NonReliableMustHaveSeqZero)
-{
-    std::array<uint8_t, kBufSize> buf{};
+// Verifies header validation rejects packets with the wrong fixed header size.
+TEST(CodecHeaderTest, HeaderValidationRejectsWrongHeaderLength) {
+  Rudp::Header header;
+  header.header_len = 27;
 
-    auto h = MakeBaseReliableHeader();
-    h.ChType = ChannelType::Unreliable;
-    h.Seq = 123; // invalid per spec
-
-    EXPECT_FALSE(EncodeHeaderV1(h, buf));
+  EXPECT_FALSE(Rudp::Codec::isValidHeader(header));
 }
 
-TEST(CodecHeaderV1, ReliableAllowsNonZeroSeq)
-{
-    std::array<uint8_t, kBufSize> buf{};
+// Verifies header validation rejects non-zero reserved bytes.
+TEST(CodecHeaderTest, HeaderValidationRejectsReservedByte) {
+  Rudp::Header header;
+  header.reserved = 1;
 
-    auto h = MakeBaseReliableHeader();
-    h.Seq = 999;
-
-    EXPECT_TRUE(EncodeHeaderV1(h, buf));
+  EXPECT_FALSE(Rudp::Codec::isValidHeader(header));
 }
 
-TEST(CodecHeaderV1, HeaderLenMustBe28)
-{
-    std::array<uint8_t, kBufSize> buf{};
+// Verifies header validation rejects use of reserved flag bits.
+TEST(CodecHeaderTest, HeaderValidationRejectsReservedFlagBits) {
+  Rudp::Header header;
+  header.flags = 0x80;
 
-    auto h = MakeBaseReliableHeader();
-    ASSERT_TRUE(EncodeHeaderV1(h, buf));
-
-    buf[OffHeaderLen] = 27; // corrupt
-
-    auto decoded = DecodeHeaderV1(buf);
-    EXPECT_FALSE(decoded.has_value());
+  EXPECT_FALSE(Rudp::Codec::isValidHeader(header));
 }
 
-TEST(CodecHeaderV1, ReservedMustBeZero)
-{
-    std::array<uint8_t, kBufSize> buf{};
+// Verifies decode rejects packets whose channel type is outside the supported
+// enum range.
+TEST(CodecHeaderTest, DecodeRejectsInvalidChannelType) {
+  auto bytes = Rudp::Codec::encode(Rudp::Header{}, {});
+  bytes[24] = std::byte{0x7f};
 
-    auto h = MakeBaseReliableHeader();
-    ASSERT_TRUE(EncodeHeaderV1(h, buf));
+  const auto decoded = Rudp::Codec::decode(bytes);
 
-    buf[OffReserved] = 1;
-
-    auto decoded = DecodeHeaderV1(buf);
-    EXPECT_FALSE(decoded.has_value());
+  EXPECT_FALSE(decoded.has_value());
 }
 
-TEST(CodecHeaderV1, ReservedFlagBitsMustBeZero)
-{
-    std::array<uint8_t, kBufSize> buf{};
+// Verifies Header::hasFlag reports set and unset bits correctly.
+TEST(ProtocolHeaderTest, HasFlagChecksBitPresence) {
+  Rudp::Header header;
+  header.flags = Rudp::Flag::Syn | Rudp::Flag::Ping;
 
-    auto h = MakeBaseReliableHeader();
-    h.Flags = 0x40; // reserved bit
-
-    EXPECT_FALSE(EncodeHeaderV1(h, buf));
+  EXPECT_TRUE(header.hasFlag(Rudp::Flag::Syn));
+  EXPECT_TRUE(header.hasFlag(Rudp::Flag::Ping));
+  EXPECT_FALSE(header.hasFlag(Rudp::Flag::Fin));
 }
 
-TEST(CodecHeaderV1, ChannelTypeOutOfRangeFails)
-{
-    std::array<uint8_t, kBufSize> buf{};
-
-    auto h = MakeBaseReliableHeader();
-    h.ChType = static_cast<ChannelType>(99);
-
-    EXPECT_FALSE(EncodeHeaderV1(h, buf));
-}
-
-TEST(CodecHeaderV1, DecodePacketReturnsPayloadSpan)
-{
-    std::vector<uint8_t> buf(HeaderLenV1 + 10);
-
-    auto h = MakeBaseReliableHeader();
-    ASSERT_TRUE(EncodeHeaderV1(h, buf));
-
-    // fake payload
-    for (size_t i = 0; i < 10; ++i)
-        buf[HeaderLenV1 + i] = static_cast<uint8_t>(i);
-
-    auto pkt = DecodePacketV1(buf);
-    ASSERT_TRUE(pkt.has_value());
-
-    EXPECT_EQ(pkt->payload.size(), 10);
-    for (size_t i = 0; i < 10; ++i)
-        EXPECT_EQ(pkt->payload[i], i);
-}
-
-TEST(CodecHeaderV1, ShortBufferFails)
-{
-    std::array<uint8_t, 10> smallBuf{};
-
-    auto decoded = DecodeHeaderV1(smallBuf);
-    EXPECT_FALSE(decoded.has_value());
-}
+}  // namespace

@@ -1,71 +1,72 @@
-#include <gtest/gtest.h>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
+#include <gtest/gtest.h>
+
+#include "Rudp/Codec.hpp"
 #include "Rudp/Utils.hpp"
 
-using namespace Rudp;
+namespace {
 
-TEST(UtilsEndian, WriteReadU16BE) {
-    std::array<uint8_t, 2> b{};
-    ASSERT_TRUE(Utils::WriteU16BE(b, 0, 0x1234));
-    EXPECT_EQ(b[0], 0x12);
-    EXPECT_EQ(b[1], 0x34);
+// Verifies that codec serialization writes fixed-width integer header fields
+// in big-endian byte order.
+TEST(CodecEndianTest, EncodesU32AndU64FieldsAsBigEndian) {
+  Rudp::Header header;
+  header.conn_id = 0x01020304u;
+  header.seq = 0x11121314u;
+  header.ack = 0x21222324u;
+  header.ack_bits = 0x3132333435363738ULL;
+  header.channel_id = 0x41424344u;
+  header.channel_type = Rudp::ChannelType::ReliableUnordered;
+  header.flags = static_cast<Rudp::Flags>(Rudp::Flag::Ping);
 
-    uint16_t v = 0;
-    ASSERT_TRUE(Utils::ReadU16BE(b, 0, v));
-    EXPECT_EQ(v, 0x1234);
+  const auto bytes = Rudp::Codec::encode(header, {});
+
+  ASSERT_EQ(bytes.size(), Rudp::kHeaderLength);
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[0]), 0x01);
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[1]), 0x02);
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[2]), 0x03);
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[3]), 0x04);
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[12]), 0x31);
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[13]), 0x32);
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[18]), 0x37);
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[19]), 0x38);
 }
 
-TEST(UtilsEndian, WriteReadU32BE) {
-    std::array<uint8_t, 4> b{};
-    ASSERT_TRUE(Utils::WriteU32BE(b, 0, 0x01020304u));
-    EXPECT_EQ(b[0], 0x01);
-    EXPECT_EQ(b[1], 0x02);
-    EXPECT_EQ(b[2], 0x03);
-    EXPECT_EQ(b[3], 0x04);
+// Verifies that 32-bit utility helpers preserve values across write/read.
+TEST(UtilsEndianTest, ReadAndWriteU32RoundTrip) {
+  std::array<std::byte, 4> bytes{};
 
-    uint32_t v = 0;
-    ASSERT_TRUE(Utils::ReadU32BE(b, 0, v));
-    EXPECT_EQ(v, 0x01020304u);
+  Rudp::Utils::writeU32(bytes, 0, 0x01020304u);
+
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[0]), 0x01);
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[1]), 0x02);
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[2]), 0x03);
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[3]), 0x04);
+  EXPECT_EQ(Rudp::Utils::readU32(bytes, 0), 0x01020304u);
 }
 
-TEST(UtilsEndian, WriteReadU64BE) {
-    std::array<uint8_t, 8> b{};
-    const uint64_t x = 0x0102030405060708ull;
-    ASSERT_TRUE(Utils::WriteU64BE(b, 0, x));
-    EXPECT_EQ(b[0], 0x01);
-    EXPECT_EQ(b[1], 0x02);
-    EXPECT_EQ(b[2], 0x03);
-    EXPECT_EQ(b[3], 0x04);
-    EXPECT_EQ(b[4], 0x05);
-    EXPECT_EQ(b[5], 0x06);
-    EXPECT_EQ(b[6], 0x07);
-    EXPECT_EQ(b[7], 0x08);
+// Verifies that 64-bit utility helpers preserve values across write/read.
+TEST(UtilsEndianTest, ReadAndWriteU64RoundTrip) {
+  std::array<std::byte, 8> bytes{};
 
-    uint64_t v = 0;
-    ASSERT_TRUE(Utils::ReadU64BE(b, 0, v));
-    EXPECT_EQ(v, x);
+  Rudp::Utils::writeU64(bytes, 0, 0x0102030405060708ULL);
+
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[0]), 0x01);
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[1]), 0x02);
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[6]), 0x07);
+  EXPECT_EQ(std::to_integer<std::uint8_t>(bytes[7]), 0x08);
+  EXPECT_EQ(Rudp::Utils::readU64(bytes, 0), 0x0102030405060708ULL);
 }
 
-TEST(UtilsEndian, BoundsChecks) {
-    uint16_t u16 = 0;
-    uint32_t u32 = 0;
-    uint64_t u64 = 0;
-
-    std::array<uint8_t, 1> b1{};
-    EXPECT_FALSE(Utils::WriteU16BE(b1, 0, 0x1234));
-    EXPECT_FALSE(Utils::ReadU16BE(b1, 0, u16));
-
-    std::array<uint8_t, 3> b3{};
-    EXPECT_FALSE(Utils::WriteU32BE(b3, 0, 0x01020304u));
-    EXPECT_FALSE(Utils::ReadU32BE(b3, 0, u32));
-
-    std::array<uint8_t, 7> b7{};
-    EXPECT_FALSE(Utils::WriteU64BE(b7, 0, 0x0102030405060708ull));
-    EXPECT_FALSE(Utils::ReadU64BE(b7, 0, u64));
-
-    std::array<uint8_t, 4> b4{};
-    EXPECT_FALSE(Utils::WriteU32BE(b4, 1, 0x01020304u)); // 1+4 > 4
-    EXPECT_FALSE(Utils::ReadU32BE(b4, 1, u32));
+// Verifies sequence comparison helpers behave correctly around wrap-around.
+TEST(ProtocolSeqTest, SequenceComparisonHandlesWrapAround) {
+  EXPECT_TRUE(Rudp::seq_lt(0u, 1u));
+  EXPECT_TRUE(Rudp::seq_lt(0xffffffffu, 0u));
+  EXPECT_TRUE(Rudp::seq_gt(0u, 0xffffffffu));
+  EXPECT_TRUE(Rudp::seq_le(7u, 7u));
+  EXPECT_TRUE(Rudp::seq_ge(7u, 7u));
 }
+
+}  // namespace
