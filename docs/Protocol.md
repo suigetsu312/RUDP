@@ -72,13 +72,11 @@ One RUDP packet maps to one UDP datagram.
 | Bit  | Name     | Meaning                    |
 | ---- | -------- | -------------------------- |
 | 0x01 | SYN      | Handshake start            |
-| 0x02 | HSK_ACK  | Handshake acknowledgment   |
-| 0x04 | FIN      | Graceful connection close  |
-| 0x08 | RST      | Immediate connection abort |
-| 0x10 | PING     | Keepalive request          |
-| 0x20 | PONG     | Keepalive reply            |
-| 0x40 | Reserved | MUST be 0                  |
-| 0x80 | Reserved | MUST be 0                  |
+| 0x02 | FIN      | Graceful connection close  |
+| 0x04 | RST      | Immediate connection abort |
+| 0x08 | PING     | Keepalive request          |
+| 0x10 | PONG     | Keepalive reply            |
+| 0x20 | Reserved | MUST be 0                  |
 
 Ack and AckBits fields are always present.
 

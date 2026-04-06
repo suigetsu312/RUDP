@@ -1,0 +1,405 @@
+{
+  "project": {
+    "name": "RUDP",
+    "type": "experimental C++23 static library plus demo executable",
+    "version": "0.1.0",
+    "generated_on": "2026-04-06",
+    "generated_from_workspace": "/home/natsu/project/RUDP",
+    "primary_goal": "Implement a lightweight reliable UDP protocol with channel-specific delivery semantics and a shared connection lifecycle.",
+    "status_summary": "Prototype / incomplete implementation. Core packet encode/decode, session orchestration, handshake skeleton, selective ACK state, and some close/reset handling exist. Many protocol behaviors remain partial."
+  },
+  "build": {
+    "build_system": "CMake",
+    "language_standard": "C++23",
+    "targets": [
+      {
+        "name": "rudp_core",
+        "type": "static_library",
+        "sources": [
+          "src/Protocol.cpp",
+          "src/Utils.cpp",
+          "src/Codec.cpp",
+          "src/Session.cpp",
+          "src/TxHandler.cpp",
+          "src/RxHandler.cpp" 
+        ]
+      },
+      {
+        "name": "rudp_app",
+        "type": "executable",
+        "sources": [
+          "src/main.cpp"
+        ]
+      },
+      {
+        "name": "unit_tests",
+        "type": "test_executable",
+        "enabled_by": "RUDP_BUILD_TESTS=ON",
+        "sources": [
+          "tests/test_utils_endian.cpp",
+          "tests/test_codec_header_v1.cpp",
+          "tests/test_session_skeleton.cpp"
+        ],
+        "dependency": "GTest"
+      }
+    ],
+    "dependencies": [
+      "Threads",
+      "GTest for unit tests"
+    ],
+    "verified_locally": {
+      "cmake_build_build_local": "passes",
+      "cmake_configure_build_tests": "fails because GTestConfig.cmake is not installed in the current environment"
+    }
+  },
+  "documents": {
+    "readme": {
+      "file": "readme.md",
+      "summary": "High-level overview, motivation, design goals, and rough project structure."
+    },
+    "protocol_spec": {
+      "file": "docs/Protocol.md",
+      "summary": "Detailed draft protocol specification for packet format, flags, reliability semantics, handshake, retransmission, and channel behavior."
+    },
+    "architecture_note": {
+      "file": "docs/architecture.md",
+      "summary": "Small mermaid diagram showing UDP datagram -> codec -> session -> TX/RX/channel/lifecycle paths."
+    }
+  },
+  "public_headers": [
+    {
+      "file": "include/Rudp/Protocol.hpp",
+      "responsibility": "Protocol constants, flags, channel types, packet header, PacketView, and serial-number comparison helpers."
+    },
+    {
+      "file": "include/Rudp/Utils.hpp",
+      "responsibility": "Endian helpers for reading/writing 32-bit and 64-bit integers from byte spans."
+    },
+    {
+      "file": "include/Rudp/Codec.hpp",
+      "responsibility": "Header validation plus packet encode/decode between Header/PacketView and byte datagrams."
+    },
+    {
+      "file": "include/Rudp/SessionTypes.hpp",
+      "responsibility": "Session state model, TX/RX sub-state, connection states, send requests, retained packets, inflight retransmission metadata, and emitted session events."
+    },
+    {
+      "file": "include/Rudp/TxHandler.hpp",
+      "responsibility": "Outgoing path: queueing app data, applying remote ACK state, selecting handshake/control/retransmit/fresh packets."
+    },
+    {
+      "file": "include/Rudp/RxHandler.hpp",
+      "responsibility": "Incoming path: control flag handling, reliable receive window updates, and channel-specific delivery/event generation."
+    },
+    {
+      "file": "include/Rudp/Session.hpp",
+      "responsibility": "Facade API for users: queue_send, poll_tx, on_datagram_received, request_close, drain_events, and role/connection state introspection."
+    }
+  ],
+  "source_files": [
+    {
+      "file": "src/Protocol.cpp",
+      "responsibility": "Implements Header::hasFlag.",
+      "notes": [
+        "Very small implementation."
+      ]
+    },
+    {
+      "file": "src/Utils.cpp",
+      "responsibility": "Big-endian read/write primitives.",
+      "notes": [
+        "No visible bounds checking; callers must provide valid spans."
+      ]
+    },
+    {
+      "file": "src/Codec.cpp",
+      "responsibility": "Packet serialization/deserialization and basic header validation.",
+      "notes": [
+        "decode returns PacketView with payload span referencing caller-provided bytes.",
+        "Header validation checks header_len, reserved byte, channel type range, and top 2 flag bits."
+      ]
+    },
+    {
+      "file": "src/Session.cpp",
+      "responsibility": "Coordinates TxHandler and RxHandler. Applies incoming ACK data to TX state before handing packet to RX path. Converts rx.should_ack into tx.ack_only_pending.",
+      "notes": [
+        "Acts as orchestration layer; some lifecycle policy still bleeds into handlers."
+      ]
+    },
+    {
+      "file": "src/TxHandler.cpp",
+      "responsibility": "Queues app data, tracks inflight reliable/control packets, consumes remote ACK/AckBits, emits handshake/control/retransmission/fresh packets.",
+      "notes": [
+        "Client auto-starts handshake on first poll_tx when in Closed state.",
+        "Handshake/control packets that consume reliable sequence numbers are inserted into inflight map.",
+        "request_close currently triggers FIN emission through fin_pending + Closing state.",
+        "Pure ACK packets are sent as unreliable channel_type with seq=0."
+      ]
+    },
+    {
+      "file": "src/RxHandler.cpp",
+      "responsibility": "Handles control flags, connection state transitions, reliable receive window tracking, and delivery per channel type.",
+      "notes": [
+        "Transitions connection_state on SYN / HandshakeAck / FIN / RST.",
+        "Schedules tx.syn_ack_pending and tx.final_ack_pending for handshake responses.",
+        "Pushes Connected / ConnectionClosed / ConnectionReset / DataReceived events into rx.pending_events."
+      ]
+    },
+    {
+      "file": "src/main.cpp",
+      "responsibility": "Minimal demo stub that only prints a message.",
+      "notes": [
+        "Not a real integration example."
+      ]
+    }
+  ],
+  "tests": [
+    {
+      "file": "tests/test_utils_endian.cpp",
+      "coverage": "Endian helpers"
+    },
+    {
+      "file": "tests/test_codec_header_v1.cpp",
+      "coverage": "Codec/header encode-decode and validation"
+    },
+    {
+      "file": "tests/test_session_skeleton.cpp",
+      "coverage": [
+        "Unreliable send skeleton",
+        "Unreliable receive event",
+        "Handshake start",
+        "Handshake success",
+        "Handshake interrupted by reset",
+        "Established connection receives data then reset",
+        "Graceful close request leading to FIN"
+      ],
+      "notes": [
+        "Tests were authored but not executed in the current environment because GTest is missing."
+      ]
+    }
+  ],
+  "runtime_model": {
+    "session_roles": [
+      "Client",
+      "Server"
+    ],
+    "connection_states": [
+      "Closed",
+      "HandshakeSent",
+      "HandshakeReceived",
+      "Established",
+      "Closing",
+      "Reset"
+    ],
+    "channel_types": [
+      "ReliableOrdered",
+      "ReliableUnordered",
+      "Unreliable",
+      "MonotonicState"
+    ],
+    "session_events": [
+      "DataReceived",
+      "Connected",
+      "ConnectionClosed",
+      "ConnectionReset",
+      "Error"
+    ],
+    "state_shape": {
+      "SessionState": {
+        "fields": [
+          "role",
+          "connection_state",
+          "tx",
+          "rx"
+        ]
+      },
+      "TxSessionState": {
+        "fields": [
+          "next_seq",
+          "remote_ack",
+          "remote_ack_bits",
+          "pending_send",
+          "inflight",
+          "syn_ack_pending",
+          "final_ack_pending",
+          "fin_pending",
+          "ack_only_pending"
+        ]
+      },
+      "RxSessionState": {
+        "fields": [
+          "next_expected",
+          "received_bits",
+          "ordered_reorder_buffer",
+          "monotonic_versions",
+          "pending_events",
+          "should_ack"
+        ]
+      }
+    }
+  },
+  "implemented_behaviors": {
+    "codec": [
+      "Encode fixed 28-byte header plus payload",
+      "Decode bytes into Header plus borrowed payload span",
+      "Basic header validation"
+    ],
+    "reliability": [
+      "Reliable sequence comparison helpers",
+      "TX inflight map keyed by sequence number",
+      "Remote cumulative ACK / AckBits application removes acknowledged inflight packets",
+      "Receive path tracks next_expected and received_bits for reliable/control packets",
+      "Retransmit on timeout using simple fixed initial RTO"
+    ],
+    "handshake": [
+      "Client auto-sends SYN from Closed on first poll_tx",
+      "Server receives SYN and schedules SYN|HandshakeAck",
+      "Client receives SYN|HandshakeAck, enters Established, schedules final ACK",
+      "Server receives final handshake ACK and enters Established",
+      "Connected event emitted when state transitions into Established"
+    ],
+    "closing_and_reset": [
+      "request_close on Established moves local state to Closing and schedules FIN",
+      "Receiving FIN moves local state to Closing and emits ConnectionClosed event",
+      "Receiving RST moves local state to Reset and emits ConnectionReset event",
+      "Receiver schedules ACK-only response on control packets"
+    ],
+    "channels": {
+      "ReliableOrdered": "Packet retained in ordered_reorder_buffer, but ordered delivery drain is not implemented.",
+      "ReliableUnordered": "Immediately emits DataReceived event; duplicate suppression is not implemented.",
+      "Unreliable": "Immediately emits DataReceived event.",
+      "MonotonicState": "Parses first 4 payload bytes as version and only emits when version is newer by signed serial-number comparison."
+    }
+  },
+  "known_gaps": [
+    {
+      "area": "spec_vs_code_flags",
+      "severity": "high",
+      "description": "Protocol.md flag layout does not match include/Rudp/Protocol.hpp. The spec lists SYN/FIN/RST/PING/PONG bits, while the code introduces HandshakeAck and shifts later bits. This inconsistency must be resolved before serious refactoring."
+    },
+    {
+      "area": "rx_reliable_ack_window",
+      "severity": "high",
+      "description": "Exact receive-side Ack/AckBits semantics are incomplete; old/duplicate/out-of-order reliable packets are not fully modeled."
+    },
+    {
+      "area": "reliable_ordered_delivery",
+      "severity": "high",
+      "description": "Reliable ordered reorder buffer exists but contiguous drain / in-order event delivery is not implemented."
+    },
+    {
+      "area": "reliable_unordered_duplicates",
+      "severity": "medium",
+      "description": "Reliable unordered packets are delivered immediately without duplicate suppression."
+    },
+    {
+      "area": "fin_rst_state_machine",
+      "severity": "medium",
+      "description": "FIN/RST handling is partial. There is no full bidirectional close state machine, no terminal closed-after-fin path, and no linger semantics."
+    },
+    {
+      "area": "fast_retransmit",
+      "severity": "medium",
+      "description": "Fast retransmit based on AckBits gap detection is not implemented."
+    },
+    {
+      "area": "rto_policy",
+      "severity": "medium",
+      "description": "Retransmission timeout/backoff policy is fixed and simplistic."
+    },
+    {
+      "area": "connection_bootstrap_policy",
+      "severity": "medium",
+      "description": "Client handshake starts implicitly on first poll_tx while Closed. This may not be the desired API boundary for a production design."
+    },
+    {
+      "area": "conn_id_management",
+      "severity": "medium",
+      "description": "Connection identifier exists in Header but there is no allocation, negotiation, validation, or session binding logic."
+    },
+    {
+      "area": "error_reporting",
+      "severity": "low",
+      "description": "SessionEvent::Error exists but is effectively unused."
+    },
+    {
+      "area": "main_demo",
+      "severity": "low",
+      "description": "src/main.cpp is only a print stub and does not exercise the library."
+    },
+    {
+      "area": "test_execution_environment",
+      "severity": "low",
+      "description": "Unit tests exist but cannot currently be configured locally due missing GTest package."
+    }
+  ],
+  "inline_todos_present_in_code": [
+    "Implement fast retransmit using AckBits gap detection",
+    "Tune retransmission timeout/backoff policy",
+    "Implement exact reliable ACK window update semantics per spec",
+    "Implement FIN/RST handling more completely",
+    "Implement ordered reliable reorder and contiguous drain",
+    "Implement reliable unordered duplicate suppression policy"
+  ],
+  "api_surface": {
+    "Session": {
+      "methods": [
+        "Session(SessionRole role = Client)",
+        "queue_send(channel_id, channel_type, payload)",
+        "poll_tx(now_ms) -> optional<vector<byte>>",
+        "on_datagram_received(bytes, now_ms)",
+        "request_close()",
+        "drain_events() -> vector<SessionEvent>",
+        "role() -> SessionRole",
+        "connection_state() -> ConnectionState"
+      ],
+      "usage_pattern": [
+        "Caller creates Session as client or server",
+        "Caller periodically polls poll_tx(now_ms) and sends returned datagram over UDP if present",
+        "Caller feeds received UDP datagrams into on_datagram_received(bytes, now_ms)",
+        "Caller drains events to consume application-visible notifications"
+      ]
+    }
+  },
+  "coupling_and_design_observations": [
+    "Session is a thin facade but still contains lifecycle glue by converting rx.should_ack into tx.ack_only_pending after every received packet.",
+    "TxHandler and RxHandler both mutate parts of the shared state model and are coupled through scheduling flags such as syn_ack_pending, final_ack_pending, fin_pending, and ack_only_pending.",
+    "Connection state is stored at SessionState level but passed by reference into handlers rather than being encapsulated in a dedicated state machine object.",
+    "Control flow priority in TxHandler is handshake/control first, then retransmit, then ack-only, then fresh app data.",
+    "PacketView payload lifetime is borrowed; higher-level code must not persist it without copying. RxHandler already copies when storing or emitting data."
+  ],
+  "likely_refactor_axes": [
+    {
+      "name": "Extract explicit connection state machine",
+      "motivation": "Handshake, reset, and close logic is currently spread across TxHandler, RxHandler, and Session."
+    },
+    {
+      "name": "Separate control-plane and data-plane packet generation",
+      "motivation": "TxHandler currently handles handshake, close, retransmission, pure ACK, and app data in one priority chain."
+    },
+    {
+      "name": "Formalize reliable receive window",
+      "motivation": "RX Ack/AckBits semantics, duplicate handling, and ordered delivery are only partially implemented."
+    },
+    {
+      "name": "Resolve protocol/spec drift before deeper changes",
+      "motivation": "The bit layout inconsistency between Protocol.md and Protocol.hpp can invalidate tests and future design decisions."
+    },
+    {
+      "name": "Clarify Session public API lifecycle",
+      "motivation": "The current API implicitly starts client handshake on poll_tx and implicitly uses request_close for FIN; a higher-level design may want explicit connect/accept/close APIs."
+    },
+    {
+      "name": "Improve testability and determinism",
+      "motivation": "Handlers are currently time-driven via now_ms and hidden state mutations; more explicit command/result objects would simplify tests."
+    }
+  ],
+  "suggested_questions_for_refactoring_model": [
+    "Should connection lifecycle become its own state machine class, separate from channel delivery and ACK bookkeeping?",
+    "Should the public Session API expose explicit connect/accept/close operations instead of implicit handshake-on-poll?",
+    "How should control packets, ACK-only packets, and app-data packets be prioritized and scheduled?",
+    "Should reliable ordered and reliable unordered delivery share one receive-tracking subsystem or separate policies over a common sequence window?",
+    "What is the cleanest way to reconcile the protocol specification with the current code flag layout?",
+    "Should PacketView borrowing remain in the public codec API, or should decode return an owning packet type for safer downstream use?"
+  ]
+}
