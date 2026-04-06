@@ -1,1 +1,4 @@
 build/
+build-local/
+build-tests/
+.codex/
