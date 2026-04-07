@@ -21,7 +21,7 @@ namespace {
 
 ControlKind classify_control_kind(const Rudp::Header& header) noexcept {
   const bool syn = header.hasFlag(Rudp::Flag::Syn);
-  const bool ack = header.hasFlag(Rudp::Flag::HandshakeAck);
+  const bool ack = header.hasFlag(Rudp::Flag::Ack);
   const bool fin = header.hasFlag(Rudp::Flag::Fin);
   const bool rst = header.hasFlag(Rudp::Flag::Rst);
   const bool ping = header.hasFlag(Rudp::Flag::Ping);

@@ -13,11 +13,8 @@ namespace Rudp::Session {
 
 class Session final {
  public:
-  explicit Session(SessionRole role = SessionRole::Client)
-      : state_(SessionState{.role = role,
-                            .connection_state = ConnectionState::Closed,
-                            .tx = {},
-                            .rx = {}}) {}
+  explicit Session(SessionRole role = SessionRole::Client);
+  Session(SessionRole role, std::uint32_t initial_seq);
 
   void queue_send(std::uint32_t channel_id,
                   Rudp::ChannelType channel_type,
@@ -34,6 +31,7 @@ class Session final {
   [[nodiscard]] std::vector<SessionEvent> drain_events();
 
   [[nodiscard]] SessionRole role() const noexcept { return state_.role; }
+  [[nodiscard]] std::uint32_t conn_id() const noexcept { return state_.conn_id; }
   [[nodiscard]] ConnectionState connection_state() const noexcept {
     return state_.connection_state;
   }

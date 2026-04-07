@@ -140,7 +140,7 @@
       "file": "src/RxHandler.cpp",
       "responsibility": "Handles control flags, connection state transitions, reliable receive window tracking, and delivery per channel type.",
       "notes": [
-        "Transitions connection_state on SYN / HandshakeAck / FIN / RST.",
+        "Transitions connection_state on SYN / ACK / FIN / RST.",
         "Schedules tx.syn_ack_pending and tx.final_ack_pending for handshake responses.",
         "Pushes Connected / ConnectionClosed / ConnectionReset / DataReceived events into rx.pending_events."
       ]
@@ -253,8 +253,8 @@
     ],
     "handshake": [
       "Client auto-sends SYN from Closed on first poll_tx",
-      "Server receives SYN and schedules SYN|HandshakeAck",
-      "Client receives SYN|HandshakeAck, enters Established, schedules final ACK",
+      "Server receives SYN and schedules SYN|ACK",
+      "Client receives SYN|ACK, enters Established, schedules final ACK",
       "Server receives final handshake ACK and enters Established",
       "Connected event emitted when state transitions into Established"
     ],
@@ -275,7 +275,7 @@
     {
       "area": "spec_vs_code_flags",
       "severity": "high",
-      "description": "Protocol.md flag layout does not match include/Rudp/Protocol.hpp. The spec lists SYN/FIN/RST/PING/PONG bits, while the code introduces HandshakeAck and shifts later bits. This inconsistency must be resolved before serious refactoring."
+      "description": "Protocol flag layout was previously drifting between spec and code; verify any future changes keep ACK/SYN-ACK encoding aligned."
     },
     {
       "area": "rx_reliable_ack_window",

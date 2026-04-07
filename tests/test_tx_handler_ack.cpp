@@ -12,6 +12,9 @@ namespace {
 using Rudp::Session::OwnedPacket;
 using Rudp::Session::TxEntry;
 using Rudp::Session::TxHandler;
+using Rudp::Session::ConnectionState;
+using Rudp::Session::RxSessionState;
+using Rudp::Session::SessionRole;
 using Rudp::Session::TxSessionState;
 
 void seed_inflight(TxSessionState& tx,
@@ -77,6 +80,44 @@ TEST(TxHandlerAckTest, ZeroAckBitsDoesNotMarkFastRetransmitCandidates) {
   EXPECT_FALSE(tx.inflight.at(100U).fast_retx_pending);
   EXPECT_FALSE(tx.inflight.at(101U).fast_retx_pending);
   EXPECT_FALSE(tx.inflight.at(102U).fast_retx_pending);
+}
+
+// Verifies retransmission attempts stop after the fixed retry-count cap instead
+// of retrying forever.
+TEST(TxHandlerAckTest, RetransmissionStopsAfterFixedRetryLimit) {
+  TxHandler handler;
+  TxSessionState tx;
+  RxSessionState rx;
+  ConnectionState connection_state = ConnectionState::Established;
+  seed_inflight(tx, {200U});
+
+  const std::array retry_times = {
+      250ULL,
+      750ULL,
+      1750ULL,
+      3750ULL,
+      7750ULL,
+      11750ULL,
+  };
+
+  for (std::size_t i = 0; i < retry_times.size() - 1U; ++i) {
+    const auto result =
+        handler.poll(retry_times[i], SessionRole::Server, 1234U,
+                     connection_state, rx, tx);
+    ASSERT_FALSE(result.fatal_error);
+    ASSERT_TRUE(result.datagram.has_value());
+    ASSERT_NE(tx.inflight.find(200U), tx.inflight.end());
+    EXPECT_EQ(tx.inflight.at(200U).retry_count, i + 1U);
+  }
+
+  const auto exhausted_result =
+      handler.poll(retry_times.back(), SessionRole::Server, 1234U,
+                   connection_state, rx, tx);
+  EXPECT_TRUE(exhausted_result.fatal_error);
+  EXPECT_FALSE(exhausted_result.datagram.has_value());
+  EXPECT_EQ(exhausted_result.error_message,
+            "retransmission retry limit exceeded");
+  EXPECT_EQ(tx.inflight.find(200U), tx.inflight.end());
 }
 
 }  // namespace

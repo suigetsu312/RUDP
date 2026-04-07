@@ -1,5 +1,6 @@
 #include "Rudp/TxHandler.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <utility>
 
@@ -9,6 +10,8 @@ namespace Rudp::Session
   {
 
     constexpr std::uint64_t kInitialRtoMs = 250;
+    constexpr std::uint64_t kMaxRtoMs = 4000;
+    constexpr std::uint32_t kMaxRetransmitCount = 5;
 
     [[nodiscard]] bool is_acknowledged_by_remote(std::uint32_t seq,
                                                  std::uint32_t ack,
@@ -19,7 +22,7 @@ namespace Rudp::Session
         return true;
       }
 
-      if (!Rudp::seq_gt(seq, ack))
+      if (!Rudp::seq_gt(seq, ack)) // case by seq equals ack
       {
         return false;
       }
@@ -43,8 +46,16 @@ namespace Rudp::Session
     [[nodiscard]] bool consumes_reliable_seq(Rudp::Flags flags)
     {
       return (flags & static_cast<Rudp::Flags>(Rudp::Flag::Syn)) != 0 ||
-             (flags & static_cast<Rudp::Flags>(Rudp::Flag::HandshakeAck)) != 0 ||
+             (flags & static_cast<Rudp::Flags>(Rudp::Flag::Ack)) != 0 ||
              (flags & static_cast<Rudp::Flags>(Rudp::Flag::Fin)) != 0;
+    }
+
+    [[nodiscard]] std::uint64_t retransmit_timeout_for(
+        std::uint32_t retry_count)
+    {
+      const auto clamped_retry_count = std::min<std::uint32_t>(retry_count, 4U);
+      const auto rto = kInitialRtoMs << clamped_retry_count;
+      return std::min(rto, kMaxRtoMs);
     }
 
   } // namespace
@@ -102,36 +113,52 @@ namespace Rudp::Session
     }
   }
 
-  std::optional<std::vector<std::byte>> TxHandler::poll(std::uint64_t now_ms,
-                                                        SessionRole role,
-                                                        ConnectionState &connection_state,
-                                                        const RxSessionState &rx,
-                                                        TxSessionState &tx)
+  TxPollResult TxHandler::poll(std::uint64_t now_ms,
+                               SessionRole role,
+                               std::uint32_t conn_id,
+                               ConnectionState &connection_state,
+                               const RxSessionState &rx,
+                               TxSessionState &tx)
   {
     if (auto bytes =
-            try_build_handshake(now_ms, role, connection_state, rx, tx);
+            try_build_handshake(now_ms, role, conn_id, connection_state, rx,
+                                tx);
         bytes.has_value())
     {
-      return bytes;
+      return TxPollResult{
+          .datagram = std::move(bytes),
+          .fatal_error = false,
+          .error_message = {},
+      };
     }
-    if (auto bytes = try_build_retransmit(now_ms, rx, tx); bytes.has_value())
+    if (auto result = try_build_retransmit(now_ms, rx, tx);
+        result.fatal_error || result.datagram.has_value())
     {
-      return bytes;
+      return result;
     }
     if (auto bytes = try_build_ack_only(rx, tx); bytes.has_value())
     {
-      return bytes;
+      return TxPollResult{
+          .datagram = std::move(bytes),
+          .fatal_error = false,
+          .error_message = {},
+      };
     }
-    if (auto bytes = try_build_fresh(now_ms, rx, tx); bytes.has_value())
+    if (auto bytes = try_build_fresh(now_ms, conn_id, rx, tx); bytes.has_value())
     {
-      return bytes;
+      return TxPollResult{
+          .datagram = std::move(bytes),
+          .fatal_error = false,
+          .error_message = {},
+      };
     }
-    return std::nullopt;
+    return {};
   }
 
   std::optional<std::vector<std::byte>> TxHandler::try_build_handshake(
       std::uint64_t now_ms,
       SessionRole role,
+      std::uint32_t conn_id,
       ConnectionState &connection_state,
       const RxSessionState &rx,
       TxSessionState &tx)
@@ -140,7 +167,8 @@ namespace Rudp::Session
         connection_state == ConnectionState::Closed)
     {
       connection_state = ConnectionState::HandshakeSent;
-      return build_control_packet(now_ms, static_cast<Rudp::Flags>(Rudp::Flag::Syn),
+      return build_control_packet(now_ms, conn_id,
+                                  static_cast<Rudp::Flags>(Rudp::Flag::Syn),
                                   rx, tx);
     }
 
@@ -149,7 +177,7 @@ namespace Rudp::Session
     {
       tx.syn_ack_pending = false;
       return build_control_packet(
-          now_ms, Rudp::Flag::Syn | Rudp::Flag::HandshakeAck, rx, tx);
+          now_ms, conn_id, Rudp::Flag::Syn | Rudp::Flag::Ack, rx, tx);
     }
 
     if (tx.final_ack_pending &&
@@ -157,35 +185,46 @@ namespace Rudp::Session
     {
       tx.final_ack_pending = false;
       return build_control_packet(
-          now_ms, static_cast<Rudp::Flags>(Rudp::Flag::HandshakeAck), rx, tx);
+          now_ms, conn_id, static_cast<Rudp::Flags>(Rudp::Flag::Ack), rx, tx);
     }
 
     if (tx.fin_pending && connection_state == ConnectionState::Closing)
     {
       tx.fin_pending = false;
-      return build_control_packet(now_ms, static_cast<Rudp::Flags>(Rudp::Flag::Fin),
+      return build_control_packet(now_ms, conn_id,
+                                  static_cast<Rudp::Flags>(Rudp::Flag::Fin),
                                   rx, tx);
     }
 
     return std::nullopt;
   }
 
-  std::optional<std::vector<std::byte>> TxHandler::try_build_retransmit(
-      std::uint64_t now_ms,
-      const RxSessionState &rx,
-      TxSessionState &tx)
+  TxPollResult TxHandler::try_build_retransmit(std::uint64_t now_ms,
+                                               const RxSessionState &rx,
+                                               TxSessionState &tx)
   {
-    for (auto &[seq, entry] : tx.inflight)
+    for (auto it = tx.inflight.begin(); it != tx.inflight.end();)
     {
-      const bool timed_out = now_ms >= entry.last_send_ms + kInitialRtoMs;
-      if (!entry.fast_retx_pending && !timed_out)
+      auto &[seq, entry] = *it;
+      static_cast<void>(seq);
+
+      if (entry.retry_count >= kMaxRetransmitCount)
       {
-        continue;
+        tx.inflight.erase(it);
+        return TxPollResult{
+            .datagram = std::nullopt,
+            .fatal_error = true,
+            .error_message = "retransmission retry limit exceeded",
+        };
       }
 
-      entry.last_send_ms = now_ms;
-      ++entry.retry_count;
-      entry.fast_retx_pending = false;
+      const auto current_rto_ms = retransmit_timeout_for(entry.retry_count);
+      const bool timed_out = now_ms >= entry.last_send_ms + current_rto_ms;
+      if (!entry.fast_retx_pending && !timed_out)
+      {
+        ++it;
+        continue;
+      }
 
       auto header = entry.packet.header;
       header.ack = rx.next_expected;
@@ -194,11 +233,18 @@ namespace Rudp::Session
       entry.packet.header.ack = header.ack;
       entry.packet.header.ack_bits = header.ack_bits;
 
-      // TODO: tune retransmission timeout/backoff policy.
-      return Rudp::Codec::encode(header, entry.packet.payload);
+      auto encoded = Rudp::Codec::encode(header, entry.packet.payload);
+      entry.last_send_ms = now_ms;
+      ++entry.retry_count;
+      entry.fast_retx_pending = false;
+      return TxPollResult{
+          .datagram = std::move(encoded),
+          .fatal_error = false,
+          .error_message = {},
+      };
     }
 
-    return std::nullopt;
+    return {};
   }
 
   std::optional<std::vector<std::byte>> TxHandler::try_build_ack_only(
@@ -222,6 +268,7 @@ namespace Rudp::Session
 
   std::optional<std::vector<std::byte>> TxHandler::try_build_fresh(
       std::uint64_t now_ms,
+      std::uint32_t conn_id,
       const RxSessionState &rx,
       TxSessionState &tx)
   {
@@ -242,7 +289,7 @@ namespace Rudp::Session
     }
 
     OwnedPacket packet =
-        make_packet_from_request(request, rx, tx, assign_reliable_seq);
+        make_packet_from_request(request, conn_id, rx, tx, assign_reliable_seq);
     auto encoded = Rudp::Codec::encode(packet.header, packet.payload);
 
     if (assign_reliable_seq)
@@ -261,11 +308,13 @@ namespace Rudp::Session
   }
 
   OwnedPacket TxHandler::make_packet_from_request(const SendRequest &req,
+                                                  std::uint32_t conn_id,
                                                   const RxSessionState &rx,
                                                   TxSessionState &tx,
                                                   bool assign_reliable_seq)
   {
     OwnedPacket packet;
+    packet.header.conn_id = conn_id;
     packet.header.channel_id = req.channel_id;
     packet.header.channel_type = req.channel_type;
     packet.header.ack = rx.next_expected;
@@ -289,6 +338,7 @@ namespace Rudp::Session
 
   std::optional<std::vector<std::byte>> TxHandler::build_control_packet(
       std::uint64_t now_ms,
+      std::uint32_t conn_id,
       Rudp::Flags flags,
       const RxSessionState &rx,
       TxSessionState &tx)
@@ -301,6 +351,7 @@ namespace Rudp::Session
     }
 
     Header header{};
+    header.conn_id = conn_id;
     header.channel_type = Rudp::ChannelType::Unreliable;
     header.flags = flags;
     header.ack = rx.next_expected;

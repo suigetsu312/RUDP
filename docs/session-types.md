@@ -338,6 +338,8 @@ struct RxSessionState final {
   std::uint32_t next_expected = 0;
   std::uint64_t received_bits = 0;
   std::map<std::uint32_t, OwnedPacket> ordered_reorder_buffer;
+  std::uint32_t next_ordered_delivery = 0;
+  bool ordered_delivery_started = false;
   std::unordered_map<std::uint32_t, std::uint32_t> monotonic_versions;
   std::vector<SessionEvent> pending_events;
   bool should_ack = false;
@@ -387,6 +389,25 @@ Current status:
 
 - packets are stored here
 - contiguous in-order drain logic is still TODO
+
+## `RxSessionState::next_ordered_delivery`
+
+The next ordered reliable sequence number that is eligible for application
+delivery.
+
+This is intentionally separate from `next_expected`:
+
+- `next_expected` is the transport ACK front
+- `next_ordered_delivery` is the app-facing ordered delivery front
+
+Those two values are related, but they are not the same responsibility.
+
+## `RxSessionState::ordered_delivery_started`
+
+Whether ordered delivery tracking has been initialized yet.
+
+This avoids overloading `0` as a magic sentinel, which is especially important
+because reliable sequence `0` can be valid after wrap-around.
 
 ## `RxSessionState::monotonic_versions`
 

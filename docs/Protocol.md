@@ -76,7 +76,7 @@ One RUDP packet maps to one UDP datagram.
 | 0x04 | RST      | Immediate connection abort |
 | 0x08 | PING     | Keepalive request          |
 | 0x10 | PONG     | Keepalive reply            |
-| 0x20 | Reserved | MUST be 0                  |
+| 0x20 | ACK      | Generic acknowledgment     |
 
 Ack and AckBits fields are always present.
 

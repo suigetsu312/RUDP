@@ -10,10 +10,10 @@ namespace Rudp::Session {
 
 class RxHandler final {
  public:
-  void on_packet(const Rudp::PacketView& packet,
-                 std::uint64_t now_ms,
-                 ControlKind control_kind,
-                 RxSessionState& rx);
+  [[nodiscard]] RxPacketResult on_packet(const Rudp::PacketView& packet,
+                                         std::uint64_t now_ms,
+                                         ControlKind control_kind,
+                                         RxSessionState& rx);
 
   [[nodiscard]] std::vector<SessionEvent> drain_events(RxSessionState& rx);
 
@@ -21,6 +21,7 @@ class RxHandler final {
   [[nodiscard]] bool update_reliable_receive_state(
       const Rudp::PacketView& packet,
       ControlKind control_kind,
+      RxPacketResult& result,
       RxSessionState& rx);
 
   void handle_reliable_ordered(const Rudp::PacketView& packet,

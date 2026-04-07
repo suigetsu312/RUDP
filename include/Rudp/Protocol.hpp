@@ -20,11 +20,11 @@ enum class ChannelType : std::uint8_t {
 
 enum class Flag : std::uint8_t {
   Syn = 0x01,
-  HandshakeAck = 0x02,
-  Fin = 0x04,
-  Rst = 0x08,
-  Ping = 0x10,
-  Pong = 0x20,
+  Fin = 0x02,
+  Rst = 0x04,
+  Ping = 0x08,
+  Pong = 0x10,
+  Ack = 0x20,
 };
 
 using Flags = std::uint8_t;

@@ -36,8 +36,9 @@ TEST(RxHandlerWrapTest, InOrderPacketAtUint32MaxAdvancesAcrossWrapBoundary) {
   header.channel_type = Rudp::ChannelType::ReliableUnordered;
 
   const std::array payload = {std::byte{0x01}};
-  handler.on_packet(make_packet_view(header, payload), 100U, ControlKind::None,
-                    rx);
+  static_cast<void>(
+      handler.on_packet(make_packet_view(header, payload), 100U,
+                        ControlKind::None, rx));
 
   EXPECT_EQ(rx.next_expected, 1U);
   EXPECT_EQ(rx.received_bits, 0ULL);
@@ -60,8 +61,9 @@ TEST(RxHandlerWrapTest, FutureReliablePacketAtZeroIsTrackedAcrossWrapBoundary) {
   header.channel_type = Rudp::ChannelType::ReliableUnordered;
 
   const std::array payload = {std::byte{0x02}};
-  handler.on_packet(make_packet_view(header, payload), 100U, ControlKind::None,
-                    rx);
+  static_cast<void>(
+      handler.on_packet(make_packet_view(header, payload), 100U,
+                        ControlKind::None, rx));
 
   EXPECT_EQ(rx.next_expected, 0xffffffffu);
   EXPECT_EQ(rx.received_bits, 0x1ULL);
@@ -85,8 +87,9 @@ TEST(RxHandlerWrapTest, StaleReliablePacketAfterWrapBoundaryIsDropped) {
   header.channel_type = Rudp::ChannelType::ReliableUnordered;
 
   const std::array payload = {std::byte{0x03}};
-  handler.on_packet(make_packet_view(header, payload), 100U, ControlKind::None,
-                    rx);
+  static_cast<void>(
+      handler.on_packet(make_packet_view(header, payload), 100U,
+                        ControlKind::None, rx));
 
   EXPECT_EQ(rx.next_expected, 1U);
   EXPECT_EQ(rx.received_bits, 0ULL);

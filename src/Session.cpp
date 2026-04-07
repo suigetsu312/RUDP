@@ -1,7 +1,37 @@
 #include "Rudp/Session.hpp"
 
+#include <random>
+
 namespace Rudp::Session {
 namespace {
+
+[[nodiscard]] std::uint32_t generate_initial_seq() {
+  std::random_device rd;
+  const auto upper = static_cast<std::uint32_t>(rd()) << 16U;
+  const auto lower = static_cast<std::uint32_t>(rd()) & 0xffffU;
+  return upper ^ lower;
+}
+
+[[nodiscard]] std::uint32_t generate_conn_id() {
+  std::random_device rd;
+  std::uint32_t value = 0;
+  while (value == 0) {
+    const auto upper = static_cast<std::uint32_t>(rd()) << 16U;
+    const auto lower = static_cast<std::uint32_t>(rd()) & 0xffffU;
+    value = upper ^ lower;
+  }
+  return value;
+}
+
+void push_local_error_event(RxSessionState& rx, std::string error_message) {
+  rx.pending_events.push_back(SessionEvent{
+      .type = SessionEvent::Type::Error,
+      .channel_id = 0,
+      .channel_type = Rudp::ChannelType::Unreliable,
+      .payload = {},
+      .error_message = std::move(error_message),
+  });
+}
 
 void push_control_event(RxSessionState& rx,
                         SessionEvent::Type type,
@@ -18,6 +48,28 @@ void push_control_event(RxSessionState& rx,
 
 }  // namespace
 
+Session::Session(SessionRole role) : Session(role, generate_initial_seq()) {}
+
+Session::Session(SessionRole role, std::uint32_t initial_seq)
+    : state_(SessionState{
+          .role = role,
+          .conn_id = 0,
+          .connection_state = ConnectionState::Closed,
+          .tx =
+              TxSessionState{
+                  .next_seq = initial_seq,
+                  .remote_ack = initial_seq,
+                  .remote_ack_bits = 0,
+                  .pending_send = {},
+                  .inflight = {},
+                  .syn_ack_pending = false,
+                  .final_ack_pending = false,
+                  .fin_pending = false,
+                  .ack_only_pending = false,
+              },
+          .rx = {},
+      }) {}
+
 void Session::queue_send(std::uint32_t channel_id,
                          Rudp::ChannelType channel_type,
                          std::span<const std::byte> payload) {
@@ -25,8 +77,15 @@ void Session::queue_send(std::uint32_t channel_id,
 }
 
 std::optional<std::vector<std::byte>> Session::poll_tx(std::uint64_t now_ms) {
-  return tx_handler_.poll(now_ms, state_.role, state_.connection_state,
-                          state_.rx, state_.tx);
+  auto result =
+      tx_handler_.poll(now_ms, state_.role, state_.conn_id,
+                       state_.connection_state, state_.rx, state_.tx);
+  if (result.fatal_error) {
+    state_.connection_state = ConnectionState::Reset;
+    push_local_error_event(state_.rx, std::move(result.error_message));
+    return std::nullopt;
+  }
+  return result.datagram;
 }
 
 void Session::on_datagram_received(std::span<const std::byte> bytes,
@@ -36,17 +95,34 @@ void Session::on_datagram_received(std::span<const std::byte> bytes,
     return;
   }
 
-  tx_handler_.on_remote_ack(decoded->header.ack, decoded->header.ack_bits,
-                            state_.tx);
   const auto control_kind = classify_control_kind(decoded->header);
+  if (state_.role == SessionRole::Server && control_kind == ControlKind::Syn &&
+      state_.conn_id == 0) {
+    state_.conn_id = generate_conn_id();
+  }
+  if (state_.role == SessionRole::Client &&
+      control_kind == ControlKind::SynAck && state_.conn_id == 0 &&
+      decoded->header.conn_id != 0) {
+    state_.conn_id = decoded->header.conn_id;
+  }
+  if (state_.conn_id != 0 && control_kind != ControlKind::Syn &&
+      decoded->header.conn_id != state_.conn_id) {
+    state_.connection_state = ConnectionState::Reset;
+    push_local_error_event(state_.rx, "conn_id mismatch");
+    return;
+  }
+  if (control_kind != ControlKind::Syn) {
+    tx_handler_.on_remote_ack(decoded->header.ack, decoded->header.ack_bits,
+                              state_.tx);
+  }
   const auto decision = decide_connection_transition(
       state_.role, state_.connection_state, control_kind);
   apply_connection_decision(*decoded, decision);
-  rx_handler_.on_packet(*decoded, now_ms, control_kind, state_.rx);
+  const auto rx_result =
+      rx_handler_.on_packet(*decoded, now_ms, control_kind, state_.rx);
 
-  if (state_.rx.should_ack) {
+  if (rx_result.schedule_ack_only) {
     state_.tx.ack_only_pending = true;
-    state_.rx.should_ack = false;
   }
 }
 

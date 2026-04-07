@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -61,6 +62,16 @@ struct SessionEvent final {
   std::string error_message;
 };
 
+struct TxPollResult final {
+  std::optional<std::vector<std::byte>> datagram;
+  bool fatal_error = false;
+  std::string error_message;
+};
+
+struct RxPacketResult final {
+  bool schedule_ack_only = false;
+};
+
 struct TxSessionState final {
   std::uint32_t next_seq = 0;
   std::uint32_t remote_ack = 0;
@@ -77,13 +88,15 @@ struct RxSessionState final {
   std::uint32_t next_expected = 0;
   std::uint64_t received_bits = 0;
   std::map<std::uint32_t, OwnedPacket> ordered_reorder_buffer;
+  std::uint32_t next_ordered_delivery = 0;
+  bool ordered_delivery_started = false;
   std::unordered_map<std::uint32_t, std::uint32_t> monotonic_versions;
   std::vector<SessionEvent> pending_events;
-  bool should_ack = false;
 };
 
 struct SessionState final {
   SessionRole role = SessionRole::Client;
+  std::uint32_t conn_id = 0;
   ConnectionState connection_state = ConnectionState::Closed;
   TxSessionState tx;
   RxSessionState rx;

@@ -19,7 +19,7 @@ TEST(CodecHeaderTest, EncodeDecodeRoundTripPreservesHeaderAndPayload) {
   header.ack_bits = 0x55aa55aa55aa55aaULL;
   header.channel_id = 400u;
   header.channel_type = Rudp::ChannelType::ReliableOrdered;
-  header.flags = Rudp::Flag::Syn | Rudp::Flag::HandshakeAck;
+  header.flags = Rudp::Flag::Syn | Rudp::Flag::Ack;
 
   const std::array payload = {
       std::byte{0xde},

@@ -57,7 +57,7 @@ void log_header(std::string_view label, const Rudp::Header& header) {
             << " channel_id=" << header.channel_id
             << " flags={"
             << (header.hasFlag(Rudp::Flag::Syn) ? " SYN" : "")
-            << (header.hasFlag(Rudp::Flag::HandshakeAck) ? " ACK" : "")
+            << (header.hasFlag(Rudp::Flag::Ack) ? " ACK" : "")
             << (header.hasFlag(Rudp::Flag::Fin) ? " FIN" : "")
             << (header.hasFlag(Rudp::Flag::Rst) ? " RST" : "")
             << (header.hasFlag(Rudp::Flag::Ping) ? " PING" : "")
@@ -96,17 +96,25 @@ void log_events(std::string_view label,
 void establish_connection(Session& client, Session& server,
                           std::uint64_t base_time_ms = 100U) {
   const auto syn = client.poll_tx(base_time_ms);
-  log_header("client -> server SYN", decode_header_or_die(syn));
+  const auto syn_header = decode_header_or_die(syn);
+  log_header("client -> server SYN", syn_header);
+  EXPECT_EQ(syn_header.conn_id, 0U);
   server.on_datagram_received(*syn, base_time_ms + 10U);
   log_state("server after SYN", server);
+  EXPECT_NE(server.conn_id(), 0U);
 
   const auto syn_ack = server.poll_tx(base_time_ms + 20U);
-  log_header("server -> client SYN-ACK", decode_header_or_die(syn_ack));
+  const auto syn_ack_header = decode_header_or_die(syn_ack);
+  log_header("server -> client SYN-ACK", syn_ack_header);
+  EXPECT_EQ(syn_ack_header.conn_id, server.conn_id());
   client.on_datagram_received(*syn_ack, base_time_ms + 30U);
   log_state("client after SYN-ACK", client);
+  EXPECT_EQ(client.conn_id(), server.conn_id());
 
   const auto final_ack = client.poll_tx(base_time_ms + 40U);
-  log_header("client -> server final ACK", decode_header_or_die(final_ack));
+  const auto final_ack_header = decode_header_or_die(final_ack);
+  log_header("client -> server final ACK", final_ack_header);
+  EXPECT_EQ(final_ack_header.conn_id, client.conn_id());
   server.on_datagram_received(*final_ack, base_time_ms + 50U);
   log_state("server after final ACK", server);
 
@@ -175,7 +183,7 @@ TEST(SessionSkeletonTest, ClientPollTxStartsHandshakeWithSyn) {
   log_header("client initial poll_tx", decoded->header);
   log_state("client after initial poll_tx", client);
   EXPECT_TRUE(decoded->header.hasFlag(Rudp::Flag::Syn));
-  EXPECT_FALSE(decoded->header.hasFlag(Rudp::Flag::HandshakeAck));
+  EXPECT_FALSE(decoded->header.hasFlag(Rudp::Flag::Ack));
   EXPECT_EQ(client.connection_state(), ConnectionState::HandshakeSent);
 }
 
@@ -191,6 +199,8 @@ TEST(SessionSkeletonTest, HandshakeSucceedsAndBothPeersBecomeEstablished) {
 
   EXPECT_EQ(client.connection_state(), ConnectionState::Established);
   EXPECT_EQ(server.connection_state(), ConnectionState::Established);
+  EXPECT_NE(client.conn_id(), 0U);
+  EXPECT_EQ(client.conn_id(), server.conn_id());
 
   const auto client_events = client.drain_events();
   const auto server_events = server.drain_events();
@@ -213,6 +223,7 @@ TEST(SessionSkeletonTest, HandshakeInterruptedByResetProducesConnectionReset) {
   EXPECT_EQ(client.connection_state(), ConnectionState::HandshakeSent);
 
   Rudp::Header rst_header;
+  rst_header.conn_id = client.conn_id();
   rst_header.flags = static_cast<Rudp::Flags>(Rudp::Flag::Rst);
   const auto rst = Rudp::Codec::encode(rst_header, std::array<std::byte, 0>{});
 
@@ -242,11 +253,13 @@ TEST(SessionSkeletonTest,
   const auto data_packet = server.poll_tx(200U);
   const auto data_header = decode_header_or_die(data_packet);
   log_header("server -> client unreliable data", data_header);
+  EXPECT_EQ(data_header.conn_id, server.conn_id());
   EXPECT_EQ(data_header.channel_id, 42U);
   EXPECT_EQ(data_header.channel_type, Rudp::ChannelType::Unreliable);
   client.on_datagram_received(*data_packet, 210U);
 
   Rudp::Header rst_header;
+  rst_header.conn_id = client.conn_id();
   rst_header.flags = static_cast<Rudp::Flags>(Rudp::Flag::Rst);
   const auto rst = Rudp::Codec::encode(rst_header, std::array<std::byte, 0>{});
   client.on_datagram_received(rst, 220U);
@@ -309,7 +322,7 @@ TEST(SessionSkeletonTest, InvalidControlFlagCombinationDoesNotMutateState) {
 
   Rudp::Header invalid_header;
   invalid_header.flags =
-      Rudp::Flag::Syn | Rudp::Flag::Fin | Rudp::Flag::HandshakeAck;
+      Rudp::Flag::Syn | Rudp::Flag::Fin | Rudp::Flag::Ack;
   const auto invalid_datagram =
       Rudp::Codec::encode(invalid_header, std::array<std::byte, 0>{});
 
@@ -396,6 +409,43 @@ TEST(SessionSkeletonTest, DuplicateFutureReliablePacketIsDropped) {
   EXPECT_TRUE(events.empty());
 }
 
+// Verifies ReliableUnordered packets are delivered immediately even when they
+// arrive out of order, and later gap-fill delivery does not replay the earlier
+// out-of-order packet.
+TEST(SessionSkeletonTest,
+     ReliableUnorderedPacketsDeliverImmediatelyWithoutReplay) {
+  Session receiver(SessionRole::Server);
+
+  Rudp::Header future_header;
+  future_header.seq = 51U;
+  future_header.channel_id = 12U;
+  future_header.channel_type = Rudp::ChannelType::ReliableUnordered;
+
+  Rudp::Header gap_fill_header = future_header;
+  gap_fill_header.seq = 52U;
+
+  const std::array future_payload = {std::byte{0x61}};
+  const std::array gap_fill_payload = {std::byte{0x62}};
+
+  receiver.on_datagram_received(
+      Rudp::Codec::encode(future_header, future_payload), 100U);
+  auto events = receiver.drain_events();
+  log_events("events after first unordered reliable packet", events);
+  ASSERT_EQ(events.size(), 1U);
+  EXPECT_EQ(events[0].type, SessionEvent::Type::DataReceived);
+  ASSERT_EQ(events[0].payload.size(), future_payload.size());
+  EXPECT_EQ(events[0].payload[0], future_payload[0]);
+
+  receiver.on_datagram_received(
+      Rudp::Codec::encode(gap_fill_header, gap_fill_payload), 110U);
+  events = receiver.drain_events();
+  log_events("events after later unordered reliable packet", events);
+  ASSERT_EQ(events.size(), 1U);
+  EXPECT_EQ(events[0].type, SessionEvent::Type::DataReceived);
+  ASSERT_EQ(events[0].payload.size(), gap_fill_payload.size());
+  EXPECT_EQ(events[0].payload[0], gap_fill_payload[0]);
+}
+
 // Verifies a reliable packet that is too far ahead of the current ACK window
 // is dropped instead of being delivered without ACK-window representation.
 TEST(SessionSkeletonTest, FutureReliablePacketOutsideAckWindowIsDropped) {
@@ -426,6 +476,124 @@ TEST(SessionSkeletonTest, FutureReliablePacketOutsideAckWindowIsDropped) {
   events = receiver.drain_events();
   log_events("events after far-future reliable packet", events);
   EXPECT_TRUE(events.empty());
+}
+
+// Verifies ReliableOrdered packets are buffered when they arrive out of order
+// and are only emitted once a contiguous sequence can be drained.
+TEST(SessionSkeletonTest, ReliableOrderedPacketsDrainInSequenceAfterGapFills) {
+  Session receiver(SessionRole::Server);
+
+  Rudp::Header first_header;
+  first_header.seq = 100U;
+  first_header.channel_id = 11U;
+  first_header.channel_type = Rudp::ChannelType::ReliableOrdered;
+
+  Rudp::Header third_header = first_header;
+  third_header.seq = 102U;
+
+  Rudp::Header second_header = first_header;
+  second_header.seq = 101U;
+
+  const std::array first_payload = {std::byte{0x10}};
+  const std::array second_payload = {std::byte{0x11}};
+  const std::array third_payload = {std::byte{0x12}};
+
+  receiver.on_datagram_received(Rudp::Codec::encode(first_header, first_payload),
+                                100U);
+  auto events = receiver.drain_events();
+  log_header("ordered packet seq=100", first_header);
+  log_events("events after first ordered packet", events);
+  ASSERT_EQ(events.size(), 1U);
+  EXPECT_EQ(events[0].type, SessionEvent::Type::DataReceived);
+  ASSERT_EQ(events[0].payload.size(), first_payload.size());
+  EXPECT_EQ(events[0].payload[0], first_payload[0]);
+
+  receiver.on_datagram_received(Rudp::Codec::encode(third_header, third_payload),
+                                110U);
+  events = receiver.drain_events();
+  log_header("ordered packet seq=102 arrives before gap fills", third_header);
+  log_events("events after out-of-order ordered packet", events);
+  EXPECT_TRUE(events.empty());
+
+  receiver.on_datagram_received(
+      Rudp::Codec::encode(second_header, second_payload), 120U);
+  events = receiver.drain_events();
+  log_header("ordered packet seq=101 fills the gap", second_header);
+  log_events("events after ordered gap fills", events);
+  ASSERT_EQ(events.size(), 2U);
+  EXPECT_EQ(events[0].type, SessionEvent::Type::DataReceived);
+  EXPECT_EQ(events[1].type, SessionEvent::Type::DataReceived);
+  ASSERT_EQ(events[0].payload.size(), second_payload.size());
+  ASSERT_EQ(events[1].payload.size(), third_payload.size());
+  EXPECT_EQ(events[0].payload[0], second_payload[0]);
+  EXPECT_EQ(events[1].payload[0], third_payload[0]);
+}
+
+// Verifies packets carrying a different ConnId after establishment are treated
+// as a fatal mismatch and reset the session.
+TEST(SessionSkeletonTest, MismatchedConnIdResetsSession) {
+  Session client;
+  Session server(SessionRole::Server);
+  establish_connection(client, server);
+  static_cast<void>(client.drain_events());
+  static_cast<void>(server.drain_events());
+
+  Rudp::Header header;
+  header.conn_id = server.conn_id() + 1U;
+  header.channel_id = 99U;
+  header.channel_type = Rudp::ChannelType::Unreliable;
+  const std::array payload = {std::byte{0x7a}};
+
+  client.on_datagram_received(Rudp::Codec::encode(header, payload), 200U);
+  log_header("peer -> client mismatched conn_id packet", header);
+  log_state("client after mismatched conn_id", client);
+
+  EXPECT_EQ(client.connection_state(), ConnectionState::Reset);
+  const auto events = client.drain_events();
+  log_events("client events after conn_id mismatch", events);
+  ASSERT_EQ(events.size(), 1U);
+  EXPECT_EQ(events.front().type, SessionEvent::Type::Error);
+  EXPECT_EQ(events.front().error_message, "conn_id mismatch");
+}
+
+// Verifies retransmission exhaustion on a reliable control packet turns the
+// session into Reset and surfaces an Error event.
+TEST(SessionSkeletonTest, RetryLimitExceededTransitionsSessionToReset) {
+  Session client;
+
+  const auto syn_packet = client.poll_tx(100U);
+  const auto syn = decode_header_or_die(syn_packet);
+  log_header("client initial SYN before retry exhaustion", syn);
+  EXPECT_TRUE(syn.hasFlag(Rudp::Flag::Syn));
+  EXPECT_EQ(client.connection_state(), ConnectionState::HandshakeSent);
+
+  const std::array retry_times = {
+      350ULL,
+      850ULL,
+      1850ULL,
+      3850ULL,
+      7850ULL,
+      11850ULL,
+  };
+
+  for (std::size_t i = 0; i < retry_times.size() - 1U; ++i) {
+    const auto retry_packet = client.poll_tx(retry_times[i]);
+    const auto retry_header = decode_header_or_die(retry_packet);
+    log_header("client retransmits SYN", retry_header);
+    EXPECT_TRUE(retry_header.hasFlag(Rudp::Flag::Syn));
+    EXPECT_EQ(client.connection_state(), ConnectionState::HandshakeSent);
+  }
+
+  const auto exhausted = client.poll_tx(retry_times.back());
+  EXPECT_FALSE(exhausted.has_value());
+  log_state("client after retry exhaustion", client);
+  EXPECT_EQ(client.connection_state(), ConnectionState::Reset);
+
+  const auto events = client.drain_events();
+  log_events("client events after retry exhaustion", events);
+  ASSERT_EQ(events.size(), 1U);
+  EXPECT_EQ(events.front().type, SessionEvent::Type::Error);
+  EXPECT_EQ(events.front().error_message, "retransmission retry limit exceeded");
 }
 
 }  // namespace
