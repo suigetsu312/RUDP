@@ -46,7 +46,7 @@ TEST(TxHandlerAckTest, AckBitsGapDetectionMarksMultipleMissingPackets) {
       (1ULL << 1U) | (1ULL << 2U) | (1ULL << 3U) | (1ULL << 5U) |
       (1ULL << 6U);
 
-  handler.on_remote_ack(ack, ack_bits, tx);
+  static_cast<void>(handler.on_remote_ack(ack, ack_bits, tx));
 
   EXPECT_EQ(tx.remote_ack, ack);
   EXPECT_EQ(tx.remote_ack_bits, ack_bits);
@@ -72,7 +72,7 @@ TEST(TxHandlerAckTest, ZeroAckBitsDoesNotMarkFastRetransmitCandidates) {
   TxSessionState tx;
   seed_inflight(tx, {100U, 101U, 102U});
 
-  handler.on_remote_ack(100U, 0ULL, tx);
+  static_cast<void>(handler.on_remote_ack(100U, 0ULL, tx));
 
   ASSERT_NE(tx.inflight.find(100U), tx.inflight.end());
   ASSERT_NE(tx.inflight.find(101U), tx.inflight.end());

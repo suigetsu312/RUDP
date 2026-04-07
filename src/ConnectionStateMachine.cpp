@@ -138,17 +138,7 @@ ConnectionDecision decide_connection_transition(SessionRole role,
       }
       if (role == SessionRole::Client &&
           current_state == ConnectionState::Established) {
-        return ConnectionDecision{
-            .valid = true,
-            .next_state = std::nullopt,
-            .schedule_syn_ack = false,
-            .schedule_final_ack = true,
-            .schedule_ack_only = false,
-            .emit_connected = false,
-            .emit_connection_closed = false,
-            .emit_connection_reset = false,
-            .error_message = {},
-        };
+        return {};
       }
       return {};
     case ControlKind::Ack:

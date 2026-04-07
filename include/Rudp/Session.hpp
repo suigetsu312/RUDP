@@ -27,6 +27,7 @@ class Session final {
                             std::uint64_t now_ms);
 
   void request_close();
+  void assign_conn_id(std::uint32_t conn_id) noexcept { state_.conn_id = conn_id; }
 
   [[nodiscard]] std::vector<SessionEvent> drain_events();
 

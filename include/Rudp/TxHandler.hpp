@@ -16,9 +16,9 @@ class TxHandler final {
                       std::span<const std::byte> payload,
                       TxSessionState& tx);
 
-  void on_remote_ack(std::uint32_t ack,
-                     std::uint64_t ack_bits,
-                     TxSessionState& tx);
+  [[nodiscard]] TxAckResult on_remote_ack(std::uint32_t ack,
+                                          std::uint64_t ack_bits,
+                                          TxSessionState& tx);
 
   [[nodiscard]] TxPollResult poll(std::uint64_t now_ms,
                                   SessionRole role,
@@ -41,6 +41,7 @@ class TxHandler final {
                                                   TxSessionState& tx);
 
   [[nodiscard]] std::optional<std::vector<std::byte>> try_build_ack_only(
+      std::uint32_t conn_id,
       const RxSessionState& rx,
       TxSessionState& tx);
 

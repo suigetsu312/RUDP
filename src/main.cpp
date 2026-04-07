@@ -65,7 +65,7 @@ void run_remote_ack_demo(std::uint32_t ack,
   std::cout << "before on_remote_ack:\n";
   print_inflight(tx);
 
-  handler.on_remote_ack(ack, ack_bits, tx);
+  static_cast<void>(handler.on_remote_ack(ack, ack_bits, tx));
 
   std::cout << "after on_remote_ack:\n";
   print_inflight(tx);
@@ -89,8 +89,8 @@ int main() {
 
   std::cout << "\nScenario 2: remote ACK front is 104 and selective ACK bits "
                "say 106 and 107 arrived.\n";
-  std::cout << "Current code will remove acknowledged inflight packets, but "
-               "fast retransmit marking is still TODO.\n";
+  std::cout << "Current code removes acknowledged inflight packets and marks "
+               "gap candidates for fast retransmit.\n";
   seed_inflight(tx, {106, 107});
   run_remote_ack_demo(104, (1ULL << 1U) | (1ULL << 2U), tx, handler);
 

@@ -12,17 +12,6 @@ namespace {
   return upper ^ lower;
 }
 
-[[nodiscard]] std::uint32_t generate_conn_id() {
-  std::random_device rd;
-  std::uint32_t value = 0;
-  while (value == 0) {
-    const auto upper = static_cast<std::uint32_t>(rd()) << 16U;
-    const auto lower = static_cast<std::uint32_t>(rd()) & 0xffffU;
-    value = upper ^ lower;
-  }
-  return value;
-}
-
 void push_local_error_event(RxSessionState& rx, std::string error_message) {
   rx.pending_events.push_back(SessionEvent{
       .type = SessionEvent::Type::Error,
@@ -64,6 +53,7 @@ Session::Session(SessionRole role, std::uint32_t initial_seq)
                   .inflight = {},
                   .syn_ack_pending = false,
                   .final_ack_pending = false,
+                  .final_ack_linger_until_ms = 0,
                   .fin_pending = false,
                   .ack_only_pending = false,
               },
@@ -96,24 +86,40 @@ void Session::on_datagram_received(std::span<const std::byte> bytes,
   }
 
   const auto control_kind = classify_control_kind(decoded->header);
-  if (state_.role == SessionRole::Server && control_kind == ControlKind::Syn &&
-      state_.conn_id == 0) {
-    state_.conn_id = generate_conn_id();
-  }
   if (state_.role == SessionRole::Client &&
       control_kind == ControlKind::SynAck && state_.conn_id == 0 &&
       decoded->header.conn_id != 0) {
     state_.conn_id = decoded->header.conn_id;
   }
+  const bool allow_server_zero_conn_id_bootstrap =
+      state_.role == SessionRole::Server &&
+      state_.connection_state == ConnectionState::Closed &&
+      decoded->header.conn_id == 0;
   if (state_.conn_id != 0 && control_kind != ControlKind::Syn &&
+      !allow_server_zero_conn_id_bootstrap &&
       decoded->header.conn_id != state_.conn_id) {
     state_.connection_state = ConnectionState::Reset;
     push_local_error_event(state_.rx, "conn_id mismatch");
     return;
   }
+  if (state_.role == SessionRole::Client &&
+      state_.connection_state == ConnectionState::Established &&
+      control_kind == ControlKind::SynAck) {
+    if (now_ms <= state_.tx.final_ack_linger_until_ms) {
+      state_.tx.final_ack_pending = true;
+    }
+    return;
+  }
+  TxAckResult ack_result{};
   if (control_kind != ControlKind::Syn) {
-    tx_handler_.on_remote_ack(decoded->header.ack, decoded->header.ack_bits,
-                              state_.tx);
+    ack_result = tx_handler_.on_remote_ack(decoded->header.ack,
+                                           decoded->header.ack_bits, state_.tx);
+  }
+  if (ack_result.acknowledged_fin &&
+      state_.connection_state == ConnectionState::Closing) {
+    state_.connection_state = ConnectionState::Closed;
+    push_control_event(state_.rx, SessionEvent::Type::ConnectionClosed,
+                       *decoded);
   }
   const auto decision = decide_connection_transition(
       state_.role, state_.connection_state, control_kind);

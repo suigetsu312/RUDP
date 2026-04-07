@@ -95,6 +95,11 @@ void log_events(std::string_view label,
 
 void establish_connection(Session& client, Session& server,
                           std::uint64_t base_time_ms = 100U) {
+  if (server.conn_id() == 0U) {
+    server.assign_conn_id(0xA11CE000U +
+                          static_cast<std::uint32_t>(base_time_ms));
+  }
+
   const auto syn = client.poll_tx(base_time_ms);
   const auto syn_header = decode_header_or_die(syn);
   log_header("client -> server SYN", syn_header);
@@ -308,6 +313,101 @@ TEST(SessionSkeletonTest, EstablishedConnectionCanCloseGracefullyWithFin) {
   log_header("client -> server ACK after FIN", ack);
   EXPECT_FALSE(ack.hasFlag(Rudp::Flag::Fin));
   EXPECT_FALSE(ack.hasFlag(Rudp::Flag::Syn));
+}
+
+// Verifies a duplicate SYN-ACK received during the final-ACK linger window
+// causes the client to resend the final ACK.
+TEST(SessionSkeletonTest, DuplicateSynAckDuringLingerResendsFinalAck) {
+  Session client;
+  Session server(SessionRole::Server);
+
+  if (server.conn_id() == 0U) {
+    server.assign_conn_id(0xA11CE100U);
+  }
+
+  const auto syn = client.poll_tx(100U);
+  ASSERT_TRUE(syn.has_value());
+  server.on_datagram_received(*syn, 110U);
+
+  const auto syn_ack = server.poll_tx(120U);
+  const auto syn_ack_header = decode_header_or_die(syn_ack);
+  ASSERT_TRUE(syn_ack.has_value());
+  client.on_datagram_received(*syn_ack, 130U);
+
+  const auto final_ack = client.poll_tx(140U);
+  const auto final_ack_header = decode_header_or_die(final_ack);
+  ASSERT_TRUE(final_ack.has_value());
+  EXPECT_TRUE(final_ack_header.hasFlag(Rudp::Flag::Ack));
+  EXPECT_FALSE(final_ack_header.hasFlag(Rudp::Flag::Syn));
+
+  client.on_datagram_received(*syn_ack, 200U);
+
+  const auto resent_final_ack = client.poll_tx(210U);
+  const auto resent_final_ack_header = decode_header_or_die(resent_final_ack);
+  EXPECT_TRUE(resent_final_ack_header.hasFlag(Rudp::Flag::Ack));
+  EXPECT_FALSE(resent_final_ack_header.hasFlag(Rudp::Flag::Syn));
+  EXPECT_EQ(resent_final_ack_header.ack, syn_ack_header.seq + 1U);
+}
+
+// Verifies the client only resends the final ACK while the handshake linger
+// window is still active.
+TEST(SessionSkeletonTest, SynAckAfterLingerExpiryDoesNotResendFinalAck) {
+  Session client;
+  Session server(SessionRole::Server);
+
+  if (server.conn_id() == 0U) {
+    server.assign_conn_id(0xA11CE200U);
+  }
+
+  const auto syn = client.poll_tx(100U);
+  ASSERT_TRUE(syn.has_value());
+  server.on_datagram_received(*syn, 110U);
+
+  const auto syn_ack = server.poll_tx(120U);
+  ASSERT_TRUE(syn_ack.has_value());
+  client.on_datagram_received(*syn_ack, 130U);
+
+  const auto final_ack = client.poll_tx(140U);
+  ASSERT_TRUE(final_ack.has_value());
+  static_cast<void>(decode_header_or_die(final_ack));
+  server.on_datagram_received(*final_ack, 150U);
+
+  const std::array payload = {std::byte{0x01}};
+  server.queue_send(1U, Rudp::ChannelType::Unreliable, payload);
+  const auto server_data = server.poll_tx(200U);
+  ASSERT_TRUE(server_data.has_value());
+  client.on_datagram_received(*server_data, 210U);
+
+  client.on_datagram_received(*syn_ack, 1200U);
+
+  const auto maybe_resent_final_ack = client.poll_tx(1210U);
+  EXPECT_FALSE(maybe_resent_final_ack.has_value());
+}
+
+// Verifies the peer that initiated FIN transitions to Closed once the FIN is
+// acknowledged, and emits a local ConnectionClosed event.
+TEST(SessionSkeletonTest, LocalFinAcknowledgementCompletesGracefulClose) {
+  Session client;
+  Session server(SessionRole::Server);
+  establish_connection(client, server);
+  static_cast<void>(client.drain_events());
+  static_cast<void>(server.drain_events());
+
+  server.request_close();
+  const auto fin_packet = server.poll_tx(300U);
+  ASSERT_TRUE(fin_packet.has_value());
+  const auto fin = decode_header_or_die(fin_packet);
+  client.on_datagram_received(*fin_packet, 310U);
+
+  const auto ack_packet = client.poll_tx(320U);
+  ASSERT_TRUE(ack_packet.has_value());
+  server.on_datagram_received(*ack_packet, 330U);
+
+  EXPECT_EQ(server.connection_state(), ConnectionState::Closed);
+  const auto events = server.drain_events();
+  ASSERT_EQ(events.size(), 1U);
+  EXPECT_EQ(events.front().type, SessionEvent::Type::ConnectionClosed);
+  static_cast<void>(fin);
 }
 
 // Verifies invalid control-flag combinations do not mutate lifecycle state and

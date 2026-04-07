@@ -68,6 +68,10 @@ struct TxPollResult final {
   std::string error_message;
 };
 
+struct TxAckResult final {
+  bool acknowledged_fin = false;
+};
+
 struct RxPacketResult final {
   bool schedule_ack_only = false;
 };
@@ -80,6 +84,7 @@ struct TxSessionState final {
   std::map<std::uint32_t, TxEntry> inflight;
   bool syn_ack_pending = false;
   bool final_ack_pending = false;
+  std::uint64_t final_ack_linger_until_ms = 0;
   bool fin_pending = false;
   bool ack_only_pending = false;
 };

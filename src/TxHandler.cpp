@@ -12,6 +12,7 @@ namespace Rudp::Session
     constexpr std::uint64_t kInitialRtoMs = 250;
     constexpr std::uint64_t kMaxRtoMs = 4000;
     constexpr std::uint32_t kMaxRetransmitCount = 5;
+    constexpr std::uint64_t kHandshakeLingerMs = 1000;
 
     [[nodiscard]] bool is_acknowledged_by_remote(std::uint32_t seq,
                                                  std::uint32_t ack,
@@ -72,10 +73,11 @@ namespace Rudp::Session
     });
   }
 
-  void TxHandler::on_remote_ack(std::uint32_t ack,
-                                std::uint64_t ack_bits,
-                                TxSessionState &tx)
+  TxAckResult TxHandler::on_remote_ack(std::uint32_t ack,
+                                       std::uint64_t ack_bits,
+                                       TxSessionState &tx)
   {
+    TxAckResult result{};
     tx.remote_ack = ack;
     tx.remote_ack_bits = ack_bits;
 
@@ -83,6 +85,10 @@ namespace Rudp::Session
     {
       if (is_acknowledged_by_remote(it->first, ack, ack_bits))
       {
+        if (it->second.packet.header.hasFlag(Rudp::Flag::Fin))
+        {
+          result.acknowledged_fin = true;
+        }
         it = tx.inflight.erase(it);
         continue;
       }
@@ -91,7 +97,7 @@ namespace Rudp::Session
 
     if (ack_bits == 0ULL)
     {
-      return;
+      return result;
     }
 
     const unsigned highest_bit =
@@ -111,6 +117,7 @@ namespace Rudp::Session
         it->second.fast_retx_pending = true;
       }
     }
+    return result;
   }
 
   TxPollResult TxHandler::poll(std::uint64_t now_ms,
@@ -136,7 +143,7 @@ namespace Rudp::Session
     {
       return result;
     }
-    if (auto bytes = try_build_ack_only(rx, tx); bytes.has_value())
+    if (auto bytes = try_build_ack_only(conn_id, rx, tx); bytes.has_value())
     {
       return TxPollResult{
           .datagram = std::move(bytes),
@@ -175,25 +182,41 @@ namespace Rudp::Session
     if (tx.syn_ack_pending &&
         connection_state == ConnectionState::HandshakeReceived)
     {
-      tx.syn_ack_pending = false;
-      return build_control_packet(
+      if (auto packet = build_control_packet(
           now_ms, conn_id, Rudp::Flag::Syn | Rudp::Flag::Ack, rx, tx);
+          packet.has_value())
+      {
+        tx.syn_ack_pending = false;
+        return packet;
+      }
+      return std::nullopt;
     }
 
     if (tx.final_ack_pending &&
         connection_state == ConnectionState::Established)
     {
-      tx.final_ack_pending = false;
-      return build_control_packet(
+      if (auto packet = build_control_packet(
           now_ms, conn_id, static_cast<Rudp::Flags>(Rudp::Flag::Ack), rx, tx);
+          packet.has_value())
+      {
+        tx.final_ack_pending = false;
+        tx.final_ack_linger_until_ms = now_ms + kHandshakeLingerMs;
+        return packet;
+      }
+      return std::nullopt;
     }
 
     if (tx.fin_pending && connection_state == ConnectionState::Closing)
     {
-      tx.fin_pending = false;
-      return build_control_packet(now_ms, conn_id,
-                                  static_cast<Rudp::Flags>(Rudp::Flag::Fin),
-                                  rx, tx);
+      if (auto packet = build_control_packet(
+              now_ms, conn_id,
+              static_cast<Rudp::Flags>(Rudp::Flag::Fin), rx, tx);
+          packet.has_value())
+      {
+        tx.fin_pending = false;
+        return packet;
+      }
+      return std::nullopt;
     }
 
     return std::nullopt;
@@ -248,6 +271,7 @@ namespace Rudp::Session
   }
 
   std::optional<std::vector<std::byte>> TxHandler::try_build_ack_only(
+      std::uint32_t conn_id,
       const RxSessionState &rx,
       TxSessionState &tx)
   {
@@ -257,10 +281,13 @@ namespace Rudp::Session
     }
 
     Header header{};
+    header.conn_id = conn_id;
+    header.flags = static_cast<Rudp::Flags>(Rudp::Flag::Ack);
     header.channel_type = Rudp::ChannelType::Unreliable;
     header.ack = rx.next_expected;
     header.ack_bits = rx.received_bits;
-    // Ack/AckBits from RX state are copied into every outbound header here.
+    // Pure ACK packets do not carry payload but still use the ACK control flag
+    // so receivers do not treat them as empty application data.
 
     tx.ack_only_pending = false;
     return Rudp::Codec::encode(header, {});

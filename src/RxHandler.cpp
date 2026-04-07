@@ -133,7 +133,9 @@ namespace Rudp::Session
       return true;
     }
 
-    result.schedule_ack_only = true;
+    result.schedule_ack_only =
+        Rudp::isReliableChannel(packet.header.channel_type) ||
+        control_kind == ControlKind::Fin;
 
     if (rx.next_expected == 0)
     {

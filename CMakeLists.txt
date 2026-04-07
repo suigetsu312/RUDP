@@ -32,6 +32,7 @@ add_library(rudp_core STATIC
   src/Utils.cpp
   src/Codec.cpp
   src/ConnectionStateMachine.cpp
+  src/ServerSessionManager.cpp
   src/Session.cpp
   src/TxHandler.cpp
   src/RxHandler.cpp
@@ -73,6 +74,7 @@ if (RUDP_BUILD_TESTS
     tests/test_codec_header_v1.cpp
     tests/test_connection_state_machine.cpp
     tests/test_rx_handler_wrap.cpp
+    tests/test_server_session_manager.cpp
     tests/test_tx_handler_ack.cpp
     tests/test_session_skeleton.cpp
   )
