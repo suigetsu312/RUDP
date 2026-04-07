@@ -410,6 +410,130 @@ TEST(SessionSkeletonTest, LocalFinAcknowledgementCompletesGracefulClose) {
   static_cast<void>(fin);
 }
 
+// Verifies an established idle session emits a transport keepalive ping instead
+// of waiting for application traffic to drive liveness checks.
+TEST(SessionSkeletonTest, EstablishedIdleSessionSchedulesPing) {
+  Session client;
+  Session server(SessionRole::Server);
+  establish_connection(client, server);
+  static_cast<void>(client.drain_events());
+  static_cast<void>(server.drain_events());
+
+  const auto ping_packet = client.poll_tx(6'000U);
+  const auto ping_header = decode_header_or_die(ping_packet);
+  log_header("client keepalive ping", ping_header);
+
+  EXPECT_TRUE(ping_header.hasFlag(Rudp::Flag::Ping));
+  EXPECT_FALSE(ping_header.hasFlag(Rudp::Flag::Pong));
+  EXPECT_EQ(client.stats().pings_sent, 1U);
+  EXPECT_EQ(client.stats().control_packets_sent, 3U);
+}
+
+// Verifies receiving a transport ping schedules an immediate pong response and
+// updates the per-session keepalive counters.
+TEST(SessionSkeletonTest, ReceivingPingSchedulesPongResponse) {
+  Session client;
+  Session server(SessionRole::Server);
+  establish_connection(client, server);
+  static_cast<void>(client.drain_events());
+  static_cast<void>(server.drain_events());
+
+  Rudp::Header ping_header;
+  ping_header.conn_id = client.conn_id();
+  ping_header.flags = static_cast<Rudp::Flags>(Rudp::Flag::Ping);
+  ping_header.channel_type = Rudp::ChannelType::Unreliable;
+
+  client.on_datagram_received(
+      Rudp::Codec::encode(ping_header, std::array<std::byte, 0>{}), 200U);
+  const auto pong_packet = client.poll_tx(210U);
+  const auto pong_header = decode_header_or_die(pong_packet);
+  log_header("client keepalive pong", pong_header);
+
+  EXPECT_TRUE(pong_header.hasFlag(Rudp::Flag::Pong));
+  EXPECT_FALSE(pong_header.hasFlag(Rudp::Flag::Ping));
+  EXPECT_EQ(client.stats().pings_received, 1U);
+  EXPECT_EQ(client.stats().pongs_sent, 1U);
+}
+
+// Verifies a keepalive pong clears the outstanding ping marker and records a
+// per-session RTT sample.
+TEST(SessionSkeletonTest, ReceivingPongUpdatesLatestSessionRtt) {
+  Session client;
+  Session server(SessionRole::Server);
+  establish_connection(client, server);
+  static_cast<void>(client.drain_events());
+  static_cast<void>(server.drain_events());
+
+  const auto ping_packet = client.poll_tx(6'000U);
+  const auto ping_header = decode_header_or_die(ping_packet);
+  ASSERT_TRUE(ping_header.hasFlag(Rudp::Flag::Ping));
+
+  Rudp::Header pong_header;
+  pong_header.conn_id = client.conn_id();
+  pong_header.flags = static_cast<Rudp::Flags>(Rudp::Flag::Pong);
+  pong_header.channel_type = Rudp::ChannelType::Unreliable;
+
+  client.on_datagram_received(
+      Rudp::Codec::encode(pong_header, std::array<std::byte, 0>{}), 6'120U);
+
+  ASSERT_TRUE(client.stats().latest_rtt_ms.has_value());
+  EXPECT_EQ(*client.stats().latest_rtt_ms, 120U);
+  EXPECT_EQ(client.stats().pongs_received, 1U);
+}
+
+// Verifies an established session transitions to Reset once the idle timeout
+// elapses without receiving any packet from the peer.
+TEST(SessionSkeletonTest, IdleTimeoutResetsEstablishedSession) {
+  Session client;
+  Session server(SessionRole::Server);
+  establish_connection(client, server);
+  static_cast<void>(client.drain_events());
+  static_cast<void>(server.drain_events());
+
+  const auto timed_out = client.poll_tx(20'000U);
+  EXPECT_FALSE(timed_out.has_value());
+  EXPECT_EQ(client.connection_state(), ConnectionState::Reset);
+
+  const auto events = client.drain_events();
+  log_events("client events after idle timeout", events);
+  ASSERT_EQ(events.size(), 1U);
+  EXPECT_EQ(events.front().type, SessionEvent::Type::Error);
+  EXPECT_EQ(events.front().error_message, "idle timeout");
+}
+
+// Verifies one-way unreliable traffic causes the receiver to eventually emit a
+// pure ACK heartbeat so the sender does not falsely hit idle timeout.
+TEST(SessionSkeletonTest,
+     OneWayUnreliableTrafficSchedulesAckOnlyHeartbeatResponse) {
+  Session client;
+  Session server(SessionRole::Server);
+  establish_connection(client, server);
+  static_cast<void>(client.drain_events());
+  static_cast<void>(server.drain_events());
+
+  const auto* text = reinterpret_cast<const std::byte*>("aaaa");
+  client.queue_send(1U, Rudp::ChannelType::Unreliable,
+                    std::span<const std::byte>(text, 4U));
+  const auto client_data = client.poll_tx(1'000U);
+  ASSERT_TRUE(client_data.has_value());
+  server.on_datagram_received(*client_data, 1'010U);
+  static_cast<void>(server.drain_events());
+
+  const auto heartbeat_ack = server.poll_tx(6'500U);
+  const auto ack_header = decode_header_or_die(heartbeat_ack);
+  log_header("server heartbeat ACK after one-way traffic", ack_header);
+  EXPECT_TRUE(ack_header.hasFlag(Rudp::Flag::Ack));
+  EXPECT_FALSE(ack_header.hasFlag(Rudp::Flag::Ping));
+  EXPECT_FALSE(ack_header.hasFlag(Rudp::Flag::Pong));
+
+  client.on_datagram_received(*heartbeat_ack, 6'510U);
+  EXPECT_NE(client.connection_state(), ConnectionState::Reset);
+
+  const auto still_alive = client.poll_tx(20'000U);
+  EXPECT_NE(client.connection_state(), ConnectionState::Reset);
+  static_cast<void>(still_alive);
+}
+
 // Verifies invalid control-flag combinations do not mutate lifecycle state and
 // are surfaced as an Error event.
 TEST(SessionSkeletonTest, InvalidControlFlagCombinationDoesNotMutateState) {

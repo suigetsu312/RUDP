@@ -39,6 +39,9 @@ class Session final {
   [[nodiscard]] std::uint32_t next_expected_seq() const noexcept {
     return state_.rx.next_expected;
   }
+  [[nodiscard]] const SessionStats& stats() const noexcept {
+    return state_.stats;
+  }
 
  private:
   void apply_connection_decision(const Rudp::PacketView& packet,

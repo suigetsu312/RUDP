@@ -83,7 +83,20 @@ bool ServerSessionManager::route_existing_active(
   if (header.conn_id == 0) {
     return false;
   }
+  if (!has_active_session(header.conn_id)) {
+    return false;
+  }
+  if (!is_active_endpoint_match(endpoint, header.conn_id)) {
+    return true;
+  }
   return try_dispatch_active(endpoint, bytes, header.conn_id, now_ms);
+}
+
+bool ServerSessionManager::is_active_endpoint_match(
+    const EndpointKey& endpoint,
+    std::uint32_t conn_id) const {
+  const auto it = active_conn_id_by_endpoint_.find(endpoint);
+  return it != active_conn_id_by_endpoint_.end() && it->second == conn_id;
 }
 
 bool ServerSessionManager::route_existing_pending(
@@ -258,6 +271,15 @@ std::optional<ConnectionState> ServerSessionManager::pending_connection_state(
   return it->second.connection_state();
 }
 
+std::optional<SessionStats> ServerSessionManager::active_stats(
+    std::uint32_t conn_id) const noexcept {
+  const auto it = find_active_session(conn_id);
+  if (it == active_by_conn_id_.end()) {
+    return std::nullopt;
+  }
+  return it->second.stats();
+}
+
 std::vector<SessionEvent> ServerSessionManager::drain_active_events(
     std::uint32_t conn_id) {
   const auto it = find_active_session(conn_id);
@@ -265,6 +287,54 @@ std::vector<SessionEvent> ServerSessionManager::drain_active_events(
     return {};
   }
   return it->second.drain_events();
+}
+
+bool ServerSessionManager::queue_send(std::uint32_t conn_id,
+                                      std::uint32_t channel_id,
+                                      Rudp::ChannelType channel_type,
+                                      std::span<const std::byte> payload) {
+  const auto it = find_active_session(conn_id);
+  if (it == active_by_conn_id_.end()) {
+    return false;
+  }
+
+  it->second.queue_send(channel_id, channel_type, payload);
+  return true;
+}
+
+std::vector<ServerSessionEvent> ServerSessionManager::drain_events() {
+  std::vector<ServerSessionEvent> events;
+
+  for (auto& [endpoint, session] : pending_by_endpoint_) {
+    auto drained = session.drain_events();
+    for (auto& event : drained) {
+      events.push_back(ServerSessionEvent{
+          .endpoint = endpoint,
+          .conn_id = session.conn_id() != 0
+                         ? std::optional<std::uint32_t>(session.conn_id())
+                         : std::nullopt,
+          .event = std::move(event),
+      });
+    }
+  }
+
+  for (const auto& [endpoint, conn_id] : active_conn_id_by_endpoint_) {
+    auto it = find_active_session(conn_id);
+    if (it == active_by_conn_id_.end()) {
+      continue;
+    }
+
+    auto drained = it->second.drain_events();
+    for (auto& event : drained) {
+      events.push_back(ServerSessionEvent{
+          .endpoint = endpoint,
+          .conn_id = conn_id,
+          .event = std::move(event),
+      });
+    }
+  }
+
+  return events;
 }
 
 ServerSessionManager::ActiveMap::iterator
@@ -319,11 +389,18 @@ void ServerSessionManager::cleanup_pending_session(
   if (pending_it == pending_by_endpoint_.end()) {
     return;
   }
+  const auto conn_id = pending_it->second.conn_id();
+  if (conn_id != 0) {
+    retired_conn_ids_.insert(conn_id);
+  }
   pending_by_endpoint_.erase(pending_it);
 }
 
 void ServerSessionManager::cleanup_active_session(const EndpointKey& endpoint,
                                                   std::uint32_t conn_id) {
+  if (conn_id != 0) {
+    retired_conn_ids_.insert(conn_id);
+  }
   active_by_conn_id_.erase(conn_id);
   const auto endpoint_it = active_conn_id_by_endpoint_.find(endpoint);
   if (endpoint_it != active_conn_id_by_endpoint_.end() &&
@@ -335,6 +412,10 @@ void ServerSessionManager::cleanup_active_session(const EndpointKey& endpoint,
 bool ServerSessionManager::conn_id_is_in_use(std::uint32_t conn_id) const
     noexcept {
   if (conn_id == 0) {
+    return true;
+  }
+
+  if (retired_conn_ids_.contains(conn_id)) {
     return true;
   }
 

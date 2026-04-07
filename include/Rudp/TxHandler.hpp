@@ -45,6 +45,11 @@ class TxHandler final {
       const RxSessionState& rx,
       TxSessionState& tx);
 
+  [[nodiscard]] std::optional<std::vector<std::byte>> try_build_keepalive(
+      std::uint32_t conn_id,
+      const RxSessionState& rx,
+      TxSessionState& tx);
+
   [[nodiscard]] std::optional<std::vector<std::byte>> try_build_fresh(
       std::uint64_t now_ms,
       std::uint32_t conn_id,

@@ -120,4 +120,24 @@ TEST(TxHandlerAckTest, RetransmissionStopsAfterFixedRetryLimit) {
   EXPECT_EQ(tx.inflight.find(200U), tx.inflight.end());
 }
 
+TEST(TxHandlerAckTest, FinalHandshakeAckDoesNotEnterRetransmitInflight) {
+  TxHandler handler;
+  TxSessionState tx;
+  RxSessionState rx;
+  ConnectionState connection_state = ConnectionState::Established;
+  tx.final_ack_pending = true;
+
+  const auto first_result =
+      handler.poll(0U, SessionRole::Client, 1234U, connection_state, rx, tx);
+  ASSERT_FALSE(first_result.fatal_error);
+  ASSERT_TRUE(first_result.datagram.has_value());
+  EXPECT_TRUE(tx.inflight.empty());
+
+  const auto later_result =
+      handler.poll(20'000U, SessionRole::Client, 1234U, connection_state, rx,
+                   tx);
+  EXPECT_FALSE(later_result.fatal_error);
+  EXPECT_FALSE(later_result.datagram.has_value());
+}
+
 }  // namespace

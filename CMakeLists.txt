@@ -18,6 +18,7 @@ option(RUDP_BUILD_TESTS "Build unit tests" OFF)
 # Dependencies
 # -----------------------
 find_package(Threads REQUIRED)
+find_package(spdlog CONFIG REQUIRED)
 
 if (RUDP_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
   enable_testing()
@@ -28,6 +29,7 @@ endif()
 # Library target (core)
 # -----------------------
 add_library(rudp_core STATIC
+  src/Config.cpp
   src/Protocol.cpp
   src/Utils.cpp
   src/Codec.cpp
@@ -57,10 +59,18 @@ endif()
 # -----------------------
 # App
 # -----------------------
-add_executable(rudp_app src/main.cpp)
+add_executable(rudp_app
+  src/RuntimeLogger.cpp
+  src/BsdClientApp.cpp
+  src/BsdServerApp.cpp
+  src/BsdUdpSocket.cpp
+  src/main.cpp
+  src/BsdRuntime.cpp
+)
 
 target_link_libraries(rudp_app PRIVATE
   rudp_core
+  spdlog::spdlog
 )
 
 # -----------------------

@@ -6,6 +6,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "Rudp/Session.hpp"
@@ -28,6 +29,12 @@ struct EndpointKeyHash final {
 struct OutboundDatagram final {
   EndpointKey endpoint;
   std::vector<std::byte> bytes;
+};
+
+struct ServerSessionEvent final {
+  EndpointKey endpoint;
+  std::optional<std::uint32_t> conn_id;
+  SessionEvent event;
 };
 
 class ServerSessionManager final {
@@ -57,9 +64,16 @@ class ServerSessionManager final {
 
   [[nodiscard]] std::optional<ConnectionState> pending_connection_state(
       const EndpointKey& endpoint) const noexcept;
+  [[nodiscard]] std::optional<SessionStats> active_stats(
+      std::uint32_t conn_id) const noexcept;
 
   [[nodiscard]] std::vector<SessionEvent> drain_active_events(
       std::uint32_t conn_id);
+  [[nodiscard]] std::vector<ServerSessionEvent> drain_events();
+  [[nodiscard]] bool queue_send(std::uint32_t conn_id,
+                                std::uint32_t channel_id,
+                                Rudp::ChannelType channel_type,
+                                std::span<const std::byte> payload);
 
  private:
   using PendingMap =
@@ -67,6 +81,7 @@ class ServerSessionManager final {
   using ActiveMap = std::unordered_map<std::uint32_t, Session>;
   using EndpointToConnIdMap =
       std::unordered_map<EndpointKey, std::uint32_t, EndpointKeyHash>;
+  using ConnIdSet = std::unordered_set<std::uint32_t>;
 
   [[nodiscard]] PendingMap::iterator find_pending_session(
       const EndpointKey& endpoint);
@@ -92,6 +107,8 @@ class ServerSessionManager final {
       std::span<const std::byte> bytes,
       const Rudp::Header& header,
       std::uint64_t now_ms);
+  [[nodiscard]] bool is_active_endpoint_match(const EndpointKey& endpoint,
+                                              std::uint32_t conn_id) const;
   [[nodiscard]] bool route_existing_pending(const EndpointKey& endpoint,
                                             std::span<const std::byte> bytes,
                                             std::uint64_t now_ms);
@@ -123,6 +140,7 @@ class ServerSessionManager final {
   PendingMap pending_by_endpoint_;
   ActiveMap active_by_conn_id_;
   EndpointToConnIdMap active_conn_id_by_endpoint_;
+  ConnIdSet retired_conn_ids_;
 };
 
 }  // namespace Rudp::Session

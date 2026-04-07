@@ -1,4 +1,5 @@
 #include "Rudp/TxHandler.hpp"
+#include "Rudp/Config.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -8,11 +9,6 @@ namespace Rudp::Session
 {
   namespace
   {
-
-    constexpr std::uint64_t kInitialRtoMs = 250;
-    constexpr std::uint64_t kMaxRtoMs = 4000;
-    constexpr std::uint32_t kMaxRetransmitCount = 5;
-    constexpr std::uint64_t kHandshakeLingerMs = 1000;
 
     [[nodiscard]] bool is_acknowledged_by_remote(std::uint32_t seq,
                                                  std::uint32_t ack,
@@ -47,16 +43,16 @@ namespace Rudp::Session
     [[nodiscard]] bool consumes_reliable_seq(Rudp::Flags flags)
     {
       return (flags & static_cast<Rudp::Flags>(Rudp::Flag::Syn)) != 0 ||
-             (flags & static_cast<Rudp::Flags>(Rudp::Flag::Ack)) != 0 ||
              (flags & static_cast<Rudp::Flags>(Rudp::Flag::Fin)) != 0;
     }
 
     [[nodiscard]] std::uint64_t retransmit_timeout_for(
         std::uint32_t retry_count)
     {
+      const auto& transport = Rudp::Config::current().transport;
       const auto clamped_retry_count = std::min<std::uint32_t>(retry_count, 4U);
-      const auto rto = kInitialRtoMs << clamped_retry_count;
-      return std::min(rto, kMaxRtoMs);
+      const auto rto = transport.initial_rto_ms << clamped_retry_count;
+      return std::min(rto, transport.max_rto_ms);
     }
 
   } // namespace
@@ -135,6 +131,7 @@ namespace Rudp::Session
       return TxPollResult{
           .datagram = std::move(bytes),
           .fatal_error = false,
+          .retransmission = false,
           .error_message = {},
       };
     }
@@ -148,6 +145,16 @@ namespace Rudp::Session
       return TxPollResult{
           .datagram = std::move(bytes),
           .fatal_error = false,
+          .retransmission = false,
+          .error_message = {},
+      };
+    }
+    if (auto bytes = try_build_keepalive(conn_id, rx, tx); bytes.has_value())
+    {
+      return TxPollResult{
+          .datagram = std::move(bytes),
+          .fatal_error = false,
+          .retransmission = false,
           .error_message = {},
       };
     }
@@ -156,6 +163,7 @@ namespace Rudp::Session
       return TxPollResult{
           .datagram = std::move(bytes),
           .fatal_error = false,
+          .retransmission = false,
           .error_message = {},
       };
     }
@@ -200,7 +208,8 @@ namespace Rudp::Session
           packet.has_value())
       {
         tx.final_ack_pending = false;
-        tx.final_ack_linger_until_ms = now_ms + kHandshakeLingerMs;
+        tx.final_ack_linger_until_ms =
+            now_ms + Rudp::Config::current().transport.handshake_linger_ms;
         return packet;
       }
       return std::nullopt;
@@ -231,12 +240,14 @@ namespace Rudp::Session
       auto &[seq, entry] = *it;
       static_cast<void>(seq);
 
-      if (entry.retry_count >= kMaxRetransmitCount)
+      if (entry.retry_count >=
+          Rudp::Config::current().transport.max_retransmit_count)
       {
         tx.inflight.erase(it);
         return TxPollResult{
             .datagram = std::nullopt,
             .fatal_error = true,
+            .retransmission = false,
             .error_message = "retransmission retry limit exceeded",
         };
       }
@@ -263,6 +274,7 @@ namespace Rudp::Session
       return TxPollResult{
           .datagram = std::move(encoded),
           .fatal_error = false,
+          .retransmission = true,
           .error_message = {},
       };
     }
@@ -332,6 +344,38 @@ namespace Rudp::Session
     }
 
     return encoded;
+  }
+
+  std::optional<std::vector<std::byte>> TxHandler::try_build_keepalive(
+      std::uint32_t conn_id,
+      const RxSessionState &rx,
+      TxSessionState &tx)
+  {
+    if (tx.pong_pending)
+    {
+      Header header{};
+      header.conn_id = conn_id;
+      header.flags = static_cast<Rudp::Flags>(Rudp::Flag::Pong);
+      header.channel_type = Rudp::ChannelType::Unreliable;
+      header.ack = rx.next_expected;
+      header.ack_bits = rx.received_bits;
+      tx.pong_pending = false;
+      return Rudp::Codec::encode(header, {});
+    }
+
+    if (!tx.ping_pending)
+    {
+      return std::nullopt;
+    }
+
+    Header header{};
+    header.conn_id = conn_id;
+    header.flags = static_cast<Rudp::Flags>(Rudp::Flag::Ping);
+    header.channel_type = Rudp::ChannelType::Unreliable;
+    header.ack = rx.next_expected;
+    header.ack_bits = rx.received_bits;
+    tx.ping_pending = false;
+    return Rudp::Codec::encode(header, {});
   }
 
   OwnedPacket TxHandler::make_packet_from_request(const SendRequest &req,
