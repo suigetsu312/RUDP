@@ -79,6 +79,38 @@ class ServerSessionManager final {
 
   [[nodiscard]] PendingMap::iterator ensure_session_for_new_peer(
       const EndpointKey& endpoint);
+  [[nodiscard]] bool is_terminal_state(ConnectionState state) const noexcept;
+  [[nodiscard]] bool try_dispatch_active(const EndpointKey& endpoint,
+                                         std::span<const std::byte> bytes,
+                                         std::uint32_t conn_id,
+                                         std::uint64_t now_ms);
+  [[nodiscard]] bool try_dispatch_pending(const EndpointKey& endpoint,
+                                          std::span<const std::byte> bytes,
+                                          std::uint64_t now_ms);
+  [[nodiscard]] bool route_existing_active(
+      const EndpointKey& endpoint,
+      std::span<const std::byte> bytes,
+      const Rudp::Header& header,
+      std::uint64_t now_ms);
+  [[nodiscard]] bool route_existing_pending(const EndpointKey& endpoint,
+                                            std::span<const std::byte> bytes,
+                                            std::uint64_t now_ms);
+  [[nodiscard]] bool route_new_peer(const EndpointKey& endpoint,
+                                    std::span<const std::byte> bytes,
+                                    const Rudp::Header& header,
+                                    std::uint64_t now_ms);
+  void cleanup_pending_if_terminal(const EndpointKey& endpoint,
+                                   PendingMap::iterator pending_it);
+  void cleanup_active_if_terminal(const EndpointKey& endpoint,
+                                  std::uint32_t conn_id,
+                                  ActiveMap::iterator active_it);
+  void collect_pending_tx(std::uint64_t now_ms,
+                          std::vector<OutboundDatagram>& outbound,
+                          std::vector<EndpointKey>& pending_to_cleanup);
+  void collect_active_tx(
+      std::uint64_t now_ms,
+      std::vector<OutboundDatagram>& outbound,
+      std::vector<std::pair<EndpointKey, std::uint32_t>>& active_to_cleanup);
   void promote_pending_session(const EndpointKey& endpoint,
                                PendingMap::iterator pending_it);
   void cleanup_pending_session(const EndpointKey& endpoint,
