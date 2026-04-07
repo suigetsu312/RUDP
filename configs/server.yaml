@@ -1,0 +1,24 @@
+mode: server
+
+runtime:
+  log_path: logs/rudp_server.log
+  socket_buffer_size: 1500
+  loop_sleep_us: 10000
+  select_timeout_us: 10000
+  poll_budget: 8
+
+connection:
+  bind_address: 127.0.0.1
+  bind_port: 9000
+
+channels:
+  - id: 1
+    name: chat
+    type: unreliable
+    default: true
+  - id: 2
+    name: events
+    type: reliable_unordered
+  - id: 3
+    name: stream
+    type: reliable_ordered

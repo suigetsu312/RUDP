@@ -82,6 +82,7 @@ if (RUDP_BUILD_TESTS
   add_executable(unit_tests
     tests/test_utils_endian.cpp
     tests/test_codec_header_v1.cpp
+    tests/test_config_yaml.cpp
     tests/test_connection_state_machine.cpp
     tests/test_rx_handler_wrap.cpp
     tests/test_server_session_manager.cpp

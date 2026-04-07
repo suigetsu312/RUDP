@@ -97,7 +97,7 @@ Reliable state (Ack/AckBits, receive bitmap, retransmission queue) MUST be updat
 * RELIABLE_UNORDERED
 * or connection-level control frames (handshake/FIN)
 
-For non-reliable packets (UNRELIABLE, MONOTONIC_STATE), the receiver MUST ignore the `Seq` field for all reliability-related processing.
+For non-reliable packets (UNRELIABLE), the receiver MUST ignore the `Seq` field for all reliability-related processing.
 
 This ensures the 64-bit AckBits window is dedicated exclusively to tracking reliable delivery.
 
@@ -176,7 +176,6 @@ ChannelType MUST NOT change at runtime.
 | 0           | RELIABLE_ORDERED   | Yes      | Yes     |
 | 1           | RELIABLE_UNORDERED | Yes      | No      |
 | 2           | UNRELIABLE         | No       | No      |
-| 3           | MONOTONIC_STATE    | No       | No      |
 
 ---
 
@@ -185,24 +184,6 @@ ChannelType MUST NOT change at runtime.
 * RELIABLE_ORDERED: delivered in order; head-of-line blocking applies.
 * RELIABLE_UNORDERED: delivered immediately upon receipt.
 * UNRELIABLE: best-effort delivery.
-* MONOTONIC_STATE: only newer versions are applied.
-
----
-
-### 6.2 MONOTONIC_STATE Version Handling
-
-Payload MUST begin with:
-
-```
-uint32 version (big-endian)
-```
-
-Version comparison MUST use modulo-2^32 serial number arithmetic:
-
-```
-new_version > old_version
-⟺ (int32)(new_version - old_version) > 0
-```
 
 ---
 

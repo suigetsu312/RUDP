@@ -1,4 +1,8 @@
 build/
 build-local/
 build-tests/
+.codex
 .codex/
+.env
+logs/
+tmp/

@@ -27,6 +27,21 @@ namespace {
 using Rudp::Session::EndpointKey;
 using Rudp::Session::ServerSessionManager;
 using Rudp::Session::SessionEvent;
+using Rudp::Config::ChannelDefinition;
+
+[[nodiscard]] std::string to_string(Rudp::ChannelType type) {
+  switch (type) {
+    case Rudp::ChannelType::ReliableOrdered:
+      return "reliable_ordered";
+    case Rudp::ChannelType::ReliableUnordered:
+      return "reliable_unordered";
+    case Rudp::ChannelType::Unreliable:
+      return "unreliable";
+    case Rudp::ChannelType::MonotonicState:
+      return "monotonic_state";
+  }
+  return "unknown";
+}
 
 [[nodiscard]] std::uint64_t now_ms() {
   using namespace std::chrono;
@@ -68,22 +83,86 @@ void drain_server_events(
   }
 }
 
-[[nodiscard]] std::optional<std::pair<std::uint32_t, std::string>>
-parse_server_send_command(
+[[nodiscard]] const ChannelDefinition* default_channel(
+    const Rudp::Config::RuntimeProfile& profile) {
+  for (const auto& channel : profile.channels) {
+    if (channel.is_default) {
+      return &channel;
+    }
+  }
+  return profile.channels.empty() ? nullptr : &profile.channels.front();
+}
+
+[[nodiscard]] const ChannelDefinition* find_channel(
+    const Rudp::Config::RuntimeProfile& profile,
+    std::string_view token) {
+  for (const auto& channel : profile.channels) {
+    if (channel.name == token) {
+      return &channel;
+    }
+  }
+
+  try {
+    const auto id = static_cast<std::uint32_t>(std::stoul(std::string(token)));
+    for (const auto& channel : profile.channels) {
+      if (channel.id == id) {
+        return &channel;
+      }
+    }
+  } catch (const std::exception&) {
+  }
+
+  return nullptr;
+}
+
+void log_channels(const Rudp::Config::RuntimeProfile& profile,
+                  const LogSink& logger) {
+  for (const auto& channel : profile.channels) {
+    std::string line = "[server] channel id=" + std::to_string(channel.id);
+    line += " name=" + channel.name;
+    line += " type=" + to_string(channel.type);
+    if (channel.is_default) {
+      line += " default=true";
+    }
+    log_line(logger, line);
+  }
+}
+
+struct ServerSendCommand final {
+  std::uint32_t conn_id = 0;
+  const ChannelDefinition* channel = nullptr;
+  std::string payload;
+};
+
+[[nodiscard]] std::optional<ServerSendCommand> parse_server_send_command(
+    const Rudp::Config::RuntimeProfile& profile,
     std::string_view line,
     const std::optional<std::uint32_t>& preferred_conn_id) {
   constexpr std::string_view prefix = "send ";
   if (line.rfind(prefix, 0) == 0) {
     const auto rest = std::string_view(line).substr(prefix.size());
-    const auto space = rest.find(' ');
-    if (space == std::string_view::npos) {
+    const auto first_space = rest.find(' ');
+    if (first_space == std::string_view::npos) {
+      return std::nullopt;
+    }
+    const auto second_space = rest.find(' ', first_space + 1U);
+    if (second_space == std::string_view::npos) {
       return std::nullopt;
     }
 
     try {
       const auto conn_id = static_cast<std::uint32_t>(
-          std::stoul(std::string(rest.substr(0, space))));
-      return std::pair{conn_id, std::string(rest.substr(space + 1U))};
+          std::stoul(std::string(rest.substr(0, first_space))));
+      const auto* channel = find_channel(
+          profile, rest.substr(first_space + 1U, second_space - first_space - 1U));
+      if (channel == nullptr) {
+        return std::nullopt;
+      }
+      return ServerSendCommand{
+          .conn_id = conn_id,
+          .channel = channel,
+          .payload = std::string(rest.substr(second_space + 1U)),
+      };
     } catch (const std::exception&) {
       return std::nullopt;
     }
@@ -92,10 +171,19 @@ parse_server_send_command(
   if (!preferred_conn_id.has_value()) {
     return std::nullopt;
   }
-  return std::pair{*preferred_conn_id, std::string(line)};
+  const auto* channel = default_channel(profile);
+  if (channel == nullptr) {
+    return std::nullopt;
+  }
+  return ServerSendCommand{
+      .conn_id = *preferred_conn_id,
+      .channel = channel,
+      .payload = std::string(line),
+  };
 }
 
 void handle_server_stdin(
+    const Rudp::Config::RuntimeProfile& profile,
     ServerSessionManager& manager,
     const LogSink& logger,
     std::optional<std::uint32_t>& preferred_conn_id,
@@ -122,45 +210,49 @@ void handle_server_stdin(
     }
     return;
   }
+  if (line == "/channels") {
+    log_channels(profile, logger);
+    return;
+  }
 
-  const auto command = parse_server_send_command(line, preferred_conn_id);
+  const auto command =
+      parse_server_send_command(profile, line, preferred_conn_id);
   if (!command.has_value()) {
     log_line(logger,
-             "[server] unable to resolve target session; use: send <conn_id> <message>");
+             "[server] unable to resolve target session; use: send <conn_id> <channel> <message>");
     return;
   }
 
   const auto* first =
-      reinterpret_cast<const std::byte*>(command->second.data());
-  const bool queued =
-      manager.queue_send(command->first, 1U, Rudp::ChannelType::Unreliable,
-                         std::span<const std::byte>(first, command->second.size()));
+      reinterpret_cast<const std::byte*>(command->payload.data());
+  const bool queued = manager.queue_send(
+      command->conn_id, command->channel->id, command->channel->type,
+      std::span<const std::byte>(first, command->payload.size()));
   if (!queued) {
     log_line(logger,
-             "[server] unknown active conn_id=" + std::to_string(command->first));
+             "[server] unknown active conn_id=" + std::to_string(command->conn_id));
   }
 }
 
 }  // namespace
 
-void run_server_app(std::string_view bind_address,
-                    std::uint16_t port,
+void run_server_app(const Rudp::Config::RuntimeProfile& profile,
                     const LogSink& logger) {
   auto socket = BsdUdpSocket::create_non_blocking();
   if (!socket.has_value()) {
     return;
   }
-  if (!socket->bind(bind_address, port)) {
+  if (!socket->bind(profile.bind_address, profile.bind_port)) {
     return;
   }
 
   ServerSessionManager manager;
   std::optional<std::uint32_t> preferred_conn_id;
   std::unordered_map<std::uint32_t, EndpointKey> active_endpoints;
-  log_line(logger, std::string("server listening on ") + std::string(bind_address) +
-                       ':' + std::to_string(port));
+  log_line(logger, std::string("server listening on ") + profile.bind_address +
+                       ':' + std::to_string(profile.bind_port));
   log_line(logger,
-           "type a line to send to the most recent active client, or use: send <conn_id> <message>");
+           "type a line to send on the default channel, or use: send <conn_id> <channel> <message>, /channels");
 
   bool should_exit = false;
   while (!should_exit) {
@@ -173,7 +265,7 @@ void run_server_app(std::string_view bind_address,
     timeval timeout{};
     timeout.tv_sec = 0;
     timeout.tv_usec = static_cast<suseconds_t>(
-        Rudp::Config::current().runtime.client_select_timeout_us);
+        profile.select_timeout_us);
     const int ready = ::select(max_fd + 1, &readfds, nullptr, nullptr, &timeout);
     if (ready < 0 && errno != EINTR) {
       std::perror("select");
@@ -182,22 +274,22 @@ void run_server_app(std::string_view bind_address,
 
     if (FD_ISSET(socket->native_handle(), &readfds)) {
       while (const auto received = socket->recv_from(
-                 Rudp::Config::current().runtime.socket_buffer_size)) {
+                 profile.socket_buffer_size)) {
         manager.on_datagram_received(received->endpoint, received->bytes, now_ms());
         drain_server_events(manager, logger, preferred_conn_id, active_endpoints);
       }
     }
 
     if (FD_ISSET(STDIN_FILENO, &readfds)) {
-      handle_server_stdin(manager, logger, preferred_conn_id, active_endpoints,
-                          should_exit);
+      handle_server_stdin(profile, manager, logger, preferred_conn_id,
+                          active_endpoints, should_exit);
     }
 
     for (auto& outbound : manager.poll_tx(now_ms())) {
       static_cast<void>(socket->send_to(outbound.endpoint, outbound.bytes));
     }
     drain_server_events(manager, logger, preferred_conn_id, active_endpoints);
-    ::usleep(Rudp::Config::current().runtime.server_loop_sleep_us);
+    ::usleep(profile.loop_sleep_us);
   }
 }
 

@@ -18,88 +18,44 @@
 namespace Rudp::Runtime {
 namespace {
 
-struct CliConfig final {
-  enum class Mode {
-    Server,
-    Client,
-  };
-
-  Mode mode = Mode::Server;
-  std::string address;
-  std::uint16_t port = 0;
-};
-
-[[nodiscard]] bool parse_mode(std::string_view value, CliConfig::Mode& mode) {
-  if (value == "server") {
-    mode = CliConfig::Mode::Server;
-    return true;
+void apply_log_path_override(Rudp::Config::RuntimeProfile& profile) {
+  const char* override_path = nullptr;
+  if (profile.mode == Rudp::Config::RuntimeMode::Server) {
+    override_path = std::getenv("RUDP_RUNTIME_SERVER_LOG_PATH");
+  } else {
+    override_path = std::getenv("RUDP_RUNTIME_CLIENT_LOG_PATH");
   }
-  if (value == "client") {
-    mode = CliConfig::Mode::Client;
-    return true;
+
+  if (override_path != nullptr && *override_path != '\0') {
+    profile.log_path = override_path;
   }
-  return false;
 }
 
 void print_usage(std::string_view argv0) {
   std::cerr << "Usage:\n"
-            << "  " << argv0 << " server [bind-address] [port]\n"
-            << "  " << argv0 << " client [server-address] [port]\n"
-            << "Defaults are loaded from .env when present.\n";
+            << "  " << argv0 << " <runtime-config.yaml>\n"
+            << "Transport defaults are loaded from .env when present.\n";
 }
 
-[[nodiscard]] std::optional<CliConfig> parse_args(int argc, char** argv) {
-  if (argc < 2 || argc > 4) {
+[[nodiscard]] std::optional<std::filesystem::path> parse_args(int argc,
+                                                              char** argv) {
+  if (argc != 2) {
     print_usage(argv[0]);
     return std::nullopt;
   }
-
-  CliConfig config;
-  if (!parse_mode(argv[1], config.mode)) {
-    print_usage(argv[0]);
-    return std::nullopt;
-  }
-
-  const auto& runtime = Rudp::Config::current().runtime;
-  if (config.mode == CliConfig::Mode::Server) {
-    config.address = runtime.server_bind_address;
-    config.port = runtime.server_port;
-  } else {
-    config.address = runtime.client_server_address;
-    config.port = runtime.client_server_port;
-  }
-
-  if (argc >= 3) {
-    config.address = argv[2];
-  }
-  if (argc >= 4) {
-    const auto parsed_port = std::strtol(argv[3], nullptr, 10);
-    if (parsed_port <= 0 || parsed_port > 65535) {
-      std::cerr << "Invalid port: " << argv[3] << '\n';
-      return std::nullopt;
-    }
-    config.port = static_cast<std::uint16_t>(parsed_port);
-  }
-
-  return config;
+  return std::filesystem::path(argv[1]);
 }
 
-[[nodiscard]] std::string default_log_filename(const CliConfig& config) {
-  const auto& runtime = Rudp::Config::current().runtime;
-  return config.mode == CliConfig::Mode::Server ? runtime.server_log_path
-                                                : runtime.client_log_path;
-}
-
-[[nodiscard]] LogSink make_runtime_logger(const CliConfig& config) {
+[[nodiscard]] LogSink make_runtime_logger(
+    const Rudp::Config::RuntimeProfile& profile) {
   std::vector<LogSink> sinks;
   sinks.push_back(make_console_logger());
 
   try {
-    const auto logger_name = config.mode == CliConfig::Mode::Server
+    const auto logger_name = profile.mode == Rudp::Config::RuntimeMode::Server
                                  ? "rudp_server_file"
                                  : "rudp_client_file";
-    sinks.push_back(
-        make_text_logger(logger_name, default_log_filename(config)));
+    sinks.push_back(make_text_logger(logger_name, profile.log_path));
   } catch (const spdlog::spdlog_ex& error) {
     std::cerr << "failed to create file logger: " << error.what() << '\n';
   }
@@ -117,16 +73,25 @@ int run_cli(int argc, char** argv) {
     return 1;
   }
 
-  const auto config = parse_args(argc, argv);
-  if (!config.has_value()) {
+  const auto config_path = parse_args(argc, argv);
+  if (!config_path.has_value()) {
     return 1;
   }
 
-  const auto logger = make_runtime_logger(*config);
-  if (config->mode == CliConfig::Mode::Server) {
-    run_server_app(config->address, config->port, logger);
+  Rudp::Config::RuntimeProfile profile;
+  std::string profile_error;
+  if (!Rudp::Config::load_runtime_profile_from_yaml(*config_path, profile,
+                                                    &profile_error)) {
+    std::cerr << "failed to load runtime config: " << profile_error << '\n';
+    return 1;
+  }
+  apply_log_path_override(profile);
+
+  const auto logger = make_runtime_logger(profile);
+  if (profile.mode == Rudp::Config::RuntimeMode::Server) {
+    run_server_app(profile, logger);
   } else {
-    run_client_app(config->address, config->port, logger);
+    run_client_app(profile, logger);
   }
   return 0;
 }

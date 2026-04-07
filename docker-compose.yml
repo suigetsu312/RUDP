@@ -1,0 +1,37 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: docker/rudp.Dockerfile
+    working_dir: /workspace
+    command: ["/workspace/configs/server.yaml"]
+    cap_add:
+      - NET_ADMIN
+    environment:
+      RUDP_RUNTIME_SERVER_LOG_PATH: ${RUDP_RUNTIME_SERVER_LOG_PATH:-/workspace/logs/netem/server.log}
+    volumes:
+      - .:/workspace
+    networks:
+      - rudpnet
+
+  client:
+    build:
+      context: .
+      dockerfile: docker/rudp.Dockerfile
+    working_dir: /workspace
+    command: ["/workspace/configs/client.yaml"]
+    cap_add:
+      - NET_ADMIN
+    environment:
+      RUDP_CLIENT_BOOTSTRAP_FILE: ${RUDP_CLIENT_BOOTSTRAP_FILE:-/workspace/tmp/client.commands}
+      RUDP_RUNTIME_CLIENT_LOG_PATH: ${RUDP_RUNTIME_CLIENT_LOG_PATH:-/workspace/logs/netem/client.log}
+    volumes:
+      - .:/workspace
+    depends_on:
+      - server
+    networks:
+      - rudpnet
+
+networks:
+  rudpnet:
+    driver: bridge

@@ -5,6 +5,9 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
+
+#include "Rudp/Protocol.hpp"
 
 namespace Rudp::Config {
 
@@ -36,10 +39,40 @@ struct Settings final {
   RuntimeSettings runtime;
 };
 
+enum class RuntimeMode : std::uint8_t {
+  Server = 0,
+  Client = 1,
+};
+
+struct ChannelDefinition final {
+  std::uint32_t id = 0;
+  std::string name;
+  Rudp::ChannelType type = Rudp::ChannelType::Unreliable;
+  bool is_default = false;
+};
+
+struct RuntimeProfile final {
+  RuntimeMode mode = RuntimeMode::Server;
+  std::string bind_address = "127.0.0.1";
+  std::uint16_t bind_port = 9000;
+  std::string remote_address = "127.0.0.1";
+  std::uint16_t remote_port = 9000;
+  std::string log_path = "logs/rudp.log";
+  std::size_t socket_buffer_size = 1500;
+  std::uint32_t loop_sleep_us = 10'000;
+  std::uint32_t select_timeout_us = 10'000;
+  std::uint32_t poll_budget = 8;
+  std::vector<ChannelDefinition> channels;
+};
+
 [[nodiscard]] const Settings& current() noexcept;
 [[nodiscard]] Settings& mutable_current() noexcept;
 [[nodiscard]] bool load_from_env_file(
     const std::filesystem::path& path,
+    std::string* error_message = nullptr);
+[[nodiscard]] bool load_runtime_profile_from_yaml(
+    const std::filesystem::path& path,
+    RuntimeProfile& profile,
     std::string* error_message = nullptr);
 
 }  // namespace Rudp::Config
