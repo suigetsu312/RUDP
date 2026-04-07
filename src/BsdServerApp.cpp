@@ -4,10 +4,12 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <csignal>
 #include <exception>
 #include <iostream>
 #include <optional>
@@ -28,6 +30,15 @@ using Rudp::Session::EndpointKey;
 using Rudp::Session::ServerSessionManager;
 using Rudp::Session::SessionEvent;
 using Rudp::Config::ChannelDefinition;
+
+std::atomic<bool> g_stop_requested{false};
+
+void handle_stop_signal(int) { g_stop_requested.store(true); }
+
+void install_signal_handlers() {
+  std::signal(SIGINT, handle_stop_signal);
+  std::signal(SIGTERM, handle_stop_signal);
+}
 
 [[nodiscard]] std::string to_string(Rudp::ChannelType type) {
   switch (type) {
@@ -125,6 +136,28 @@ void log_channels(const Rudp::Config::RuntimeProfile& profile,
       line += " default=true";
     }
     log_line(logger, line);
+  }
+}
+
+void log_server_summaries(
+    ServerSessionManager& manager,
+    const LogSink& logger,
+    const std::unordered_map<std::uint32_t, EndpointKey>& active_endpoints) {
+  if (active_endpoints.empty()) {
+    log_line(logger, "[server] summary no-active-sessions");
+    return;
+  }
+
+  for (const auto& [conn_id, endpoint] : active_endpoints) {
+    const auto stats = manager.active_stats(conn_id);
+    if (!stats.has_value()) {
+      continue;
+    }
+
+    std::string prefix = "[server] endpoint=" + endpoint.address + ':' +
+                         std::to_string(endpoint.port) + " conn_id=" +
+                         std::to_string(conn_id);
+    log_line(logger, format_session_summary(prefix, *stats));
   }
 }
 
@@ -238,6 +271,8 @@ void handle_server_stdin(
 
 void run_server_app(const Rudp::Config::RuntimeProfile& profile,
                     const LogSink& logger) {
+  install_signal_handlers();
+  g_stop_requested.store(false);
   auto socket = BsdUdpSocket::create_non_blocking();
   if (!socket.has_value()) {
     return;
@@ -249,18 +284,32 @@ void run_server_app(const Rudp::Config::RuntimeProfile& profile,
   ServerSessionManager manager;
   std::optional<std::uint32_t> preferred_conn_id;
   std::unordered_map<std::uint32_t, EndpointKey> active_endpoints;
+  bool stdin_enabled = ::isatty(STDIN_FILENO) != 0;
   log_line(logger, std::string("server listening on ") + profile.bind_address +
                        ':' + std::to_string(profile.bind_port));
-  log_line(logger,
-           "type a line to send on the default channel, or use: send <conn_id> <channel> <message>, /channels");
+  if (stdin_enabled) {
+    log_line(logger,
+             "type a line to send on the default channel, or use: send <conn_id> <channel> <message>, /channels");
+  } else {
+    log_line(logger,
+             "[server] stdin is not interactive; runtime commands disabled");
+  }
 
   bool should_exit = false;
   while (!should_exit) {
+    if (g_stop_requested.load()) {
+      should_exit = true;
+      break;
+    }
+
     fd_set readfds;
     FD_ZERO(&readfds);
     FD_SET(socket->native_handle(), &readfds);
-    FD_SET(STDIN_FILENO, &readfds);
-    const int max_fd = std::max(socket->native_handle(), STDIN_FILENO);
+    int max_fd = socket->native_handle();
+    if (stdin_enabled) {
+      FD_SET(STDIN_FILENO, &readfds);
+      max_fd = std::max(max_fd, STDIN_FILENO);
+    }
 
     timeval timeout{};
     timeout.tv_sec = 0;
@@ -280,9 +329,16 @@ void run_server_app(const Rudp::Config::RuntimeProfile& profile,
       }
     }
 
-    if (FD_ISSET(STDIN_FILENO, &readfds)) {
-      handle_server_stdin(profile, manager, logger, preferred_conn_id,
-                          active_endpoints, should_exit);
+    if (stdin_enabled && FD_ISSET(STDIN_FILENO, &readfds)) {
+      if (!std::cin.good()) {
+        stdin_enabled = false;
+      } else {
+        handle_server_stdin(profile, manager, logger, preferred_conn_id,
+                            active_endpoints, should_exit);
+        if (!std::cin.good()) {
+          stdin_enabled = false;
+        }
+      }
     }
 
     for (auto& outbound : manager.poll_tx(now_ms())) {
@@ -291,6 +347,8 @@ void run_server_app(const Rudp::Config::RuntimeProfile& profile,
     drain_server_events(manager, logger, preferred_conn_id, active_endpoints);
     ::usleep(profile.loop_sleep_us);
   }
+
+  log_server_summaries(manager, logger, active_endpoints);
 }
 
 }  // namespace Rudp::Runtime

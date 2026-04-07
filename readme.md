@@ -122,6 +122,39 @@ Weak-network experiment scaffold:
 ./scripts/run_netem_experiment.zsh down
 ```
 
+Recommended manual experiment matrix:
+
+| Scenario | Netem | Channel | Suggested bootstrap |
+| --- | --- | --- | --- |
+| baseline-chat | none | `chat` / `Unreliable` | `/spawn chat 4 0 5 burst` |
+| baseline-events | none | `events` / `ReliableUnordered` | `/spawn events 4 0 5 burst` |
+| baseline-stream | none | `stream` / `ReliableOrdered` | `/spawn stream 4 0 5 burst` |
+| delay-100ms-stream | `delay 100ms` | `stream` / `ReliableOrdered` | `/spawn stream 4 0 5 burst` |
+| loss-5pct-events | `loss 5%` | `events` / `ReliableUnordered` | `/spawn events 4 0 5 burst` |
+| reorder-25pct-stream | `reorder 25% 50%` | `stream` / `ReliableOrdered` | `/spawn stream 4 0 5 burst` |
+
+If you want to run the whole matrix unattended, use:
+
+```bash
+# default: 600 seconds per case
+./scripts/run_netem_matrix.zsh
+
+# custom duration per case
+./scripts/run_netem_matrix.zsh 300
+```
+
+Here `count=0` means "keep sending until the experiment is torn down".
+
+The matrix runner will:
+
+* start each experiment
+* continuously send traffic for the configured duration
+* tear it down so final per-session summaries are flushed to the log files
+* move on to the next case automatically
+
+This is useful when you want to leave the machine running for one or two hours
+and inspect the final logs later.
+
 The Docker experiment helper writes a bootstrap client command into
 `tmp/client.commands`.
 
@@ -135,7 +168,7 @@ logs/baseline/20260407230512/client.log
 You can override the default load command, for example:
 
 ```bash
-RUDP_CLIENT_COMMAND="/spawn events 4 2000 2 burst" \
+RUDP_CLIENT_COMMAND="/spawn events 4 0 2 burst" \
   ./scripts/run_netem_experiment.zsh delay 80ms
 ```
 
@@ -157,6 +190,38 @@ ls logs/baseline
 # tear everything down
 ./scripts/run_netem_experiment.zsh down
 ```
+
+Docker image rebuild policy:
+
+```bash
+# default: only build when rudp-server / rudp-client images are missing
+./scripts/run_netem_experiment.zsh baseline
+
+# force rebuild after code changes
+RUDP_DOCKER_BUILD=always ./scripts/run_netem_experiment.zsh baseline
+
+# skip rebuild entirely and require existing images
+RUDP_DOCKER_BUILD=never ./scripts/run_netem_experiment.zsh baseline
+```
+
+When you use the unattended matrix runner, `RUDP_DOCKER_BUILD=always` only
+rebuilds the first case. The remaining cases reuse the same images so the
+whole run does not spend time recompiling six times.
+
+For `reorder`, the helper automatically applies a small baseline delay first
+because `tc netem reorder ...` requires delay to be present. Override it with
+`RUDP_NETEM_REORDER_DELAY`, for example:
+
+```bash
+RUDP_NETEM_REORDER_DELAY=40ms ./scripts/run_netem_experiment.zsh reorder 25% 50%
+```
+
+RTT fields are always printed in summaries. If you see `rtt_ms=n/a`, it means
+that no RTT sample was collected during that run.
+
+By default the client sends a low-frequency keepalive probe every `500ms`
+while established. This keeps RTT samples flowing during sustained traffic
+without turning `PING/PONG` into a high-rate control stream.
 
 Useful runtime commands:
 
@@ -192,7 +257,10 @@ Then in the client terminal:
 send chat hello
 send events event-1
 send stream ordered-message
-/spawn stream 4 1000 5 burst
+/spawn stream 4 0 5 burst
+
+Use `count=0` if you want the workers to keep sending until `/stop-load`
+or until the runtime is torn down.
 ```
 
 Then in the server terminal:

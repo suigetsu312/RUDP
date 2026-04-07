@@ -55,6 +55,8 @@ bool assign_integer(Integer& target,
   }
 }
 
+[[nodiscard]] bool parse_bool(std::string_view value, bool& target);
+
 bool apply_kv(Settings& settings,
               std::string_view key,
               std::string_view value,
@@ -82,6 +84,17 @@ bool apply_kv(Settings& settings,
   if (key == "RUDP_TRANSPORT_IDLE_TIMEOUT_MS") {
     return assign_integer(settings.transport.idle_timeout_ms, value,
                           error_message, key);
+  }
+  if (key == "RUDP_TRANSPORT_ENABLE_ACTIVITY_ACK_ONLY") {
+    bool parsed = false;
+    if (!parse_bool(value, parsed)) {
+      if (error_message != nullptr) {
+        *error_message = "invalid boolean for key " + std::string(key);
+      }
+      return false;
+    }
+    settings.transport.enable_activity_ack_only = parsed;
+    return true;
   }
   if (key == "RUDP_RUNTIME_SERVER_BIND_ADDRESS") {
     settings.runtime.server_bind_address = unquote(value);

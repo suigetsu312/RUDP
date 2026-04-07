@@ -18,6 +18,25 @@
 namespace Rudp::Runtime {
 namespace {
 
+void apply_string_override(std::string& target, const char* env_name) {
+  const char* value = std::getenv(env_name);
+  if (value != nullptr && *value != '\0') {
+    target = value;
+  }
+}
+
+void apply_u16_override(std::uint16_t& target, const char* env_name) {
+  const char* value = std::getenv(env_name);
+  if (value == nullptr || *value == '\0') {
+    return;
+  }
+
+  try {
+    target = static_cast<std::uint16_t>(std::stoul(value));
+  } catch (const std::exception&) {
+  }
+}
+
 void apply_log_path_override(Rudp::Config::RuntimeProfile& profile) {
   const char* override_path = nullptr;
   if (profile.mode == Rudp::Config::RuntimeMode::Server) {
@@ -29,6 +48,21 @@ void apply_log_path_override(Rudp::Config::RuntimeProfile& profile) {
   if (override_path != nullptr && *override_path != '\0') {
     profile.log_path = override_path;
   }
+}
+
+void apply_connection_overrides(Rudp::Config::RuntimeProfile& profile) {
+  if (profile.mode == Rudp::Config::RuntimeMode::Server) {
+    apply_string_override(profile.bind_address,
+                          "RUDP_RUNTIME_SERVER_BIND_ADDRESS");
+    apply_u16_override(profile.bind_port, "RUDP_RUNTIME_SERVER_BIND_PORT");
+    return;
+  }
+
+  apply_string_override(profile.bind_address, "RUDP_RUNTIME_CLIENT_BIND_ADDRESS");
+  apply_u16_override(profile.bind_port, "RUDP_RUNTIME_CLIENT_BIND_PORT");
+  apply_string_override(profile.remote_address,
+                        "RUDP_RUNTIME_CLIENT_REMOTE_ADDRESS");
+  apply_u16_override(profile.remote_port, "RUDP_RUNTIME_CLIENT_REMOTE_PORT");
 }
 
 void print_usage(std::string_view argv0) {
@@ -85,6 +119,7 @@ int run_cli(int argc, char** argv) {
     std::cerr << "failed to load runtime config: " << profile_error << '\n';
     return 1;
   }
+  apply_connection_overrides(profile);
   apply_log_path_override(profile);
 
   const auto logger = make_runtime_logger(profile);

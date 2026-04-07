@@ -8,6 +8,8 @@ services:
     cap_add:
       - NET_ADMIN
     environment:
+      RUDP_RUNTIME_SERVER_BIND_ADDRESS: 0.0.0.0
+      RUDP_RUNTIME_SERVER_BIND_PORT: 9000
       RUDP_RUNTIME_SERVER_LOG_PATH: ${RUDP_RUNTIME_SERVER_LOG_PATH:-/workspace/logs/netem/server.log}
     volumes:
       - .:/workspace
@@ -24,6 +26,8 @@ services:
       - NET_ADMIN
     environment:
       RUDP_CLIENT_BOOTSTRAP_FILE: ${RUDP_CLIENT_BOOTSTRAP_FILE:-/workspace/tmp/client.commands}
+      RUDP_RUNTIME_CLIENT_REMOTE_ADDRESS: server
+      RUDP_RUNTIME_CLIENT_REMOTE_PORT: 9000
       RUDP_RUNTIME_CLIENT_LOG_PATH: ${RUDP_RUNTIME_CLIENT_LOG_PATH:-/workspace/logs/netem/client.log}
     volumes:
       - .:/workspace

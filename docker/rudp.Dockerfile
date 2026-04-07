@@ -22,7 +22,9 @@ RUN git clone https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}" && \
 WORKDIR /src
 COPY . .
 
-RUN cmake -S . -B build \
+
+RUN rm -rf build && \
+    cmake -S . -B build \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DRUDP_BUILD_TESTS=OFF \

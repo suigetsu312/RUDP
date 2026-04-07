@@ -129,25 +129,31 @@ void emit_connection_decision_events(RxSessionState& rx,
   }
 }
 
-[[nodiscard]] bool should_schedule_keepalive(const SessionState& state,
-                                             std::uint64_t now_ms) {
-  if (state.connection_state != ConnectionState::Established ||
-      state.tx.ack_only_pending || state.tx.activity_ack_pending ||
-      state.tx.ping_outstanding || state.tx.ping_pending ||
-      state.tx.pong_pending) {
+[[nodiscard]] bool should_schedule_probe(const SessionState& state,
+                                         std::uint64_t now_ms) {
+  if (state.role != SessionRole::Client ||
+      state.connection_state != ConnectionState::Established ||
+      state.tx.probe.ping_outstanding || state.tx.probe.ping_pending ||
+      state.tx.probe.pong_pending) {
     return false;
   }
 
   const auto& transport = Rudp::Config::current().transport;
-  const auto last_activity = std::max(state.last_rx_ms, state.last_tx_ms);
-  return now_ms >= last_activity + transport.keepalive_idle_ms;
+  const auto probe_baseline =
+      state.tx.probe.last_sent_ms != 0 ? state.tx.probe.last_sent_ms
+                                       : state.established_since_ms;
+  return now_ms >= probe_baseline + transport.keepalive_idle_ms;
 }
 
 [[nodiscard]] bool should_schedule_activity_ack(const SessionState& state,
                                                 std::uint64_t now_ms) {
+  if (!Rudp::Config::current().transport.enable_activity_ack_only) {
+    return false;
+  }
+
   if (state.connection_state != ConnectionState::Established ||
       !state.tx.activity_ack_pending || state.tx.ack_only_pending ||
-      state.tx.ping_pending || state.tx.pong_pending) {
+      state.tx.probe.ping_pending || state.tx.probe.pong_pending) {
     return false;
   }
 
@@ -214,18 +220,29 @@ void record_outbound_stats(SessionState& state,
   }
 }
 
-void handle_keepalive_receive(SessionState& state,
-                              ControlKind control_kind,
-                              std::uint64_t now_ms) {
+void handle_probe_receive(SessionState& state,
+                          ControlKind control_kind,
+                          std::uint64_t now_ms) {
   if (control_kind == ControlKind::Ping &&
       state.connection_state == ConnectionState::Established) {
-    state.tx.pong_pending = true;
+    state.tx.probe.pong_pending = true;
     return;
   }
 
-  if (control_kind == ControlKind::Pong && state.tx.ping_outstanding) {
-    state.tx.ping_outstanding = false;
-    state.stats.latest_rtt_ms = now_ms - state.tx.last_ping_sent_ms;
+  if (control_kind == ControlKind::Pong && state.tx.probe.ping_outstanding) {
+    state.tx.probe.ping_outstanding = false;
+    const auto rtt_ms = now_ms - state.tx.probe.last_ping_sent_ms;
+    state.stats.latest_rtt_ms = rtt_ms;
+    ++state.stats.rtt_sample_count;
+    state.stats.rtt_sum_ms += rtt_ms;
+    if (!state.stats.min_rtt_ms.has_value() ||
+        rtt_ms < *state.stats.min_rtt_ms) {
+      state.stats.min_rtt_ms = rtt_ms;
+    }
+    if (!state.stats.max_rtt_ms.has_value() ||
+        rtt_ms > *state.stats.max_rtt_ms) {
+      state.stats.max_rtt_ms = rtt_ms;
+    }
   }
 }
 
@@ -238,6 +255,7 @@ Session::Session(SessionRole role, std::uint32_t initial_seq)
           .role = role,
           .conn_id = 0,
           .connection_state = ConnectionState::Closed,
+          .established_since_ms = 0,
           .last_rx_ms = 0,
           .last_tx_ms = 0,
           .stats = {},
@@ -254,6 +272,7 @@ Session::Session(SessionRole role, std::uint32_t initial_seq)
                   .fin_pending = false,
                   .ack_only_pending = false,
                   .activity_ack_pending = false,
+                  .probe = {},
               },
           .rx = {},
       }) {}
@@ -273,8 +292,8 @@ std::optional<std::vector<std::byte>> Session::poll_tx(std::uint64_t now_ms) {
 
   if (should_schedule_activity_ack(state_, now_ms)) {
     state_.tx.ack_only_pending = true;
-  } else if (should_schedule_keepalive(state_, now_ms)) {
-    state_.tx.ping_pending = true;
+  } else if (should_schedule_probe(state_, now_ms)) {
+    state_.tx.probe.ping_pending = true;
   }
 
   auto result =
@@ -290,8 +309,9 @@ std::optional<std::vector<std::byte>> Session::poll_tx(std::uint64_t now_ms) {
     if (decoded.has_value()) {
       const auto control_kind = classify_control_kind(decoded->header);
       if (control_kind == ControlKind::Ping) {
-        state_.tx.ping_outstanding = true;
-        state_.tx.last_ping_sent_ms = now_ms;
+        state_.tx.probe.ping_outstanding = true;
+        state_.tx.probe.last_sent_ms = now_ms;
+        state_.tx.probe.last_ping_sent_ms = now_ms;
       }
       record_outbound_stats(state_, *decoded, result.datagram->size(), now_ms,
                             result.retransmission);
@@ -325,7 +345,7 @@ void Session::on_datagram_received(std::span<const std::byte> bytes,
     return;
   }
 
-  handle_keepalive_receive(state_, control_kind, now_ms);
+  handle_probe_receive(state_, control_kind, now_ms);
 
   TxAckResult ack_result{};
   apply_remote_ack(tx_handler_, decoded->header, control_kind, ack_result,
@@ -351,6 +371,7 @@ void Session::on_datagram_received(std::span<const std::byte> bytes,
 
 void Session::apply_connection_decision(const Rudp::PacketView& packet,
                                         const ConnectionDecision& decision) {
+  const auto previous_state = state_.connection_state;
   if (!decision.valid) {
     if (!decision.error_message.empty()) {
       emit_control_event(state_.rx, SessionEvent::Type::Error, packet,
@@ -361,6 +382,10 @@ void Session::apply_connection_decision(const Rudp::PacketView& packet,
 
   if (decision.next_state.has_value()) {
     state_.connection_state = *decision.next_state;
+    if (previous_state != ConnectionState::Established &&
+        state_.connection_state == ConnectionState::Established) {
+      state_.established_since_ms = state_.last_rx_ms;
+    }
   }
   if (decision.schedule_syn_ack) {
     state_.tx.syn_ack_pending = true;

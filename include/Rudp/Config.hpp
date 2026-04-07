@@ -16,8 +16,9 @@ struct TransportSettings final {
   std::uint64_t max_rto_ms = 4000;
   std::uint32_t max_retransmit_count = 5;
   std::uint64_t handshake_linger_ms = 1000;
-  std::uint64_t keepalive_idle_ms = 5000;
+  std::uint64_t keepalive_idle_ms = 500;
   std::uint64_t idle_timeout_ms = 15000;
+  bool enable_activity_ack_only = false;
 };
 
 struct RuntimeSettings final {

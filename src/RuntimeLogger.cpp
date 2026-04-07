@@ -92,9 +92,30 @@ std::string format_session_stats(const Session::SessionStats& stats) {
   line += " pong=" + std::to_string(stats.pongs_sent) + "/" +
           std::to_string(stats.pongs_received);
   line += " retx=" + std::to_string(stats.retransmissions_sent);
-  if (stats.latest_rtt_ms.has_value()) {
-    line += " rtt_ms=" + std::to_string(*stats.latest_rtt_ms);
-  }
+  line += " rtt_ms=" +
+          (stats.latest_rtt_ms.has_value()
+               ? std::to_string(*stats.latest_rtt_ms)
+               : std::string("n/a"));
+  line += " rtt_avg_ms=" +
+          (stats.rtt_sample_count != 0
+               ? std::to_string(stats.rtt_sum_ms / stats.rtt_sample_count)
+               : std::string("n/a"));
+  line += " rtt_min_ms=" +
+          (stats.min_rtt_ms.has_value()
+               ? std::to_string(*stats.min_rtt_ms)
+               : std::string("n/a"));
+  line += " rtt_max_ms=" +
+          (stats.max_rtt_ms.has_value()
+               ? std::to_string(*stats.max_rtt_ms)
+               : std::string("n/a"));
+  return line;
+}
+
+std::string format_session_summary(std::string_view prefix,
+                                   const Session::SessionStats& stats) {
+  std::string line(prefix);
+  line += " summary";
+  line += format_session_stats(stats);
   return line;
 }
 

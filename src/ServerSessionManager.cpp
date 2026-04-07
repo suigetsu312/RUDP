@@ -149,6 +149,7 @@ bool ServerSessionManager::try_dispatch_pending(const EndpointKey& endpoint,
   const auto state = pending_it->second.connection_state();
   if (state == ConnectionState::Established) {
     promote_pending_session(endpoint, pending_it);
+    return true;
   }
   cleanup_pending_if_terminal(endpoint, pending_it);
   return true;

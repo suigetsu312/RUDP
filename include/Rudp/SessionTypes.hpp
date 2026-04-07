@@ -76,7 +76,11 @@ struct SessionStats final {
   std::uint64_t pings_received = 0;
   std::uint64_t pongs_received = 0;
   std::uint64_t retransmissions_sent = 0;
+  std::uint64_t rtt_sample_count = 0;
+  std::uint64_t rtt_sum_ms = 0;
   std::optional<std::uint64_t> latest_rtt_ms;
+  std::optional<std::uint64_t> min_rtt_ms;
+  std::optional<std::uint64_t> max_rtt_ms;
 };
 
 struct TxPollResult final {
@@ -94,6 +98,14 @@ struct RxPacketResult final {
   bool schedule_ack_only = false;
 };
 
+struct ProbeTxState final {
+  bool ping_pending = false;
+  bool pong_pending = false;
+  bool ping_outstanding = false;
+  std::uint64_t last_sent_ms = 0;
+  std::uint64_t last_ping_sent_ms = 0;
+};
+
 struct TxSessionState final {
   std::uint32_t next_seq = 0;
   std::uint32_t remote_ack = 0;
@@ -106,10 +118,7 @@ struct TxSessionState final {
   bool fin_pending = false;
   bool ack_only_pending = false;
   bool activity_ack_pending = false;
-  bool ping_pending = false;
-  bool pong_pending = false;
-  bool ping_outstanding = false;
-  std::uint64_t last_ping_sent_ms = 0;
+  ProbeTxState probe;
 };
 
 struct RxSessionState final {
@@ -126,6 +135,7 @@ struct SessionState final {
   SessionRole role = SessionRole::Client;
   std::uint32_t conn_id = 0;
   ConnectionState connection_state = ConnectionState::Closed;
+  std::uint64_t established_since_ms = 0;
   std::uint64_t last_rx_ms = 0;
   std::uint64_t last_tx_ms = 0;
   SessionStats stats;

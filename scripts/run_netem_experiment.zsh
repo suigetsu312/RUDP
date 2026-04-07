@@ -6,7 +6,9 @@ SCRIPT_DIR=${0:A:h}
 REPO_ROOT=${SCRIPT_DIR:h}
 SCRIPT_NAME=${0:t}
 BOOTSTRAP_FILE="${REPO_ROOT}/tmp/client.commands"
-DEFAULT_CLIENT_COMMAND=${RUDP_CLIENT_COMMAND:-"/spawn stream 4 1000 5 burst"}
+DEFAULT_CLIENT_COMMAND=${RUDP_CLIENT_COMMAND:-"/spawn stream 4 0 5 burst"}
+DEFAULT_BUILD_POLICY=${RUDP_DOCKER_BUILD:-auto}
+DEFAULT_REORDER_DELAY=${RUDP_NETEM_REORDER_DELAY:-20ms}
 RUN_ID=""
 EXPERIMENT_NAME=""
 LOG_DIR=""
@@ -31,6 +33,13 @@ Examples:
 Environment:
   RUDP_CLIENT_COMMAND   bootstrap command written to tmp/client.commands
                         default: ${DEFAULT_CLIENT_COMMAND}
+  RUDP_DOCKER_BUILD     auto|always|never
+                        auto: build only if images are missing
+                        always: rebuild before compose up
+                        never: skip rebuild and require existing images
+  RUDP_NETEM_REORDER_DELAY
+                        baseline delay applied before reorder
+                        default: ${DEFAULT_REORDER_DELAY}
 EOF
 }
 
@@ -61,8 +70,39 @@ init_log_dir() {
   export RUDP_CLIENT_BOOTSTRAP_FILE="/workspace/tmp/client.commands"
 }
 
+image_exists() {
+  local image="$1"
+  docker image inspect "${image}" >/dev/null 2>&1
+}
+
+ensure_images() {
+  case "${DEFAULT_BUILD_POLICY}" in
+    always)
+      echo "--- building images (policy=always)"
+      docker compose build server client
+      ;;
+    never)
+      if ! image_exists rudp-server || ! image_exists rudp-client; then
+        echo "required images missing and RUDP_DOCKER_BUILD=never" >&2
+        exit 1
+      fi
+      ;;
+    auto)
+      if ! image_exists rudp-server || ! image_exists rudp-client; then
+        echo "--- images missing; building once (policy=auto)"
+        docker compose build server client
+      fi
+      ;;
+    *)
+      echo "unknown RUDP_DOCKER_BUILD policy: ${DEFAULT_BUILD_POLICY}" >&2
+      exit 1
+      ;;
+  esac
+}
+
 compose_up() {
-  docker compose up -d --build server client
+  ensure_images
+  docker compose up -d --no-build server client
 }
 
 compose_down() {
@@ -143,8 +183,8 @@ main() {
       write_bootstrap
       init_log_dir "reorder-${1//\%/pct}"
       compose_up
-      apply_netem server reorder "$@"
-      apply_netem client reorder "$@"
+      apply_netem server delay "${DEFAULT_REORDER_DELAY}" reorder "$@"
+      apply_netem client delay "${DEFAULT_REORDER_DELAY}" reorder "$@"
       show_status
       ;;
     custom)

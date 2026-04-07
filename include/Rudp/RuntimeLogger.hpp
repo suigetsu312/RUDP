@@ -23,5 +23,8 @@ void log_line(const LogSink& logger, std::string_view message);
     const Session::SessionEvent& event);
 [[nodiscard]] std::string format_session_stats(
     const Session::SessionStats& stats);
+[[nodiscard]] std::string format_session_summary(
+    std::string_view prefix,
+    const Session::SessionStats& stats);
 
 }  // namespace Rudp::Runtime

@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -17,12 +18,22 @@ namespace {
 
 [[nodiscard]] std::optional<sockaddr_in> make_sockaddr(std::string_view address,
                                                        std::uint16_t port) {
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  if (::inet_pton(AF_INET, std::string(address).c_str(), &addr.sin_addr) != 1) {
+  addrinfo hints{};
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_DGRAM;
+  hints.ai_protocol = IPPROTO_UDP;
+
+  addrinfo* result = nullptr;
+  const auto service = std::to_string(port);
+  const int status = ::getaddrinfo(std::string(address).c_str(), service.c_str(),
+                                   &hints, &result);
+  if (status != 0 || result == nullptr) {
     return std::nullopt;
   }
+
+  sockaddr_in addr =
+      *reinterpret_cast<sockaddr_in*>(result->ai_addr);
+  ::freeaddrinfo(result);
   return addr;
 }
 

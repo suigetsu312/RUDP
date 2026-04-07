@@ -21,6 +21,7 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+#include <csignal>
 
 #include "Rudp/BsdUdpSocket.hpp"
 #include "Rudp/Config.hpp"
@@ -34,6 +35,15 @@ using Rudp::Session::EndpointKey;
 using Rudp::Session::Session;
 using Rudp::Session::SessionRole;
 using Rudp::Config::ChannelDefinition;
+
+std::atomic<bool> g_stop_requested{false};
+
+void handle_stop_signal(int) { g_stop_requested.store(true); }
+
+void install_signal_handlers() {
+  std::signal(SIGINT, handle_stop_signal);
+  std::signal(SIGTERM, handle_stop_signal);
+}
 
 [[nodiscard]] std::string to_string(Rudp::ChannelType type) {
   switch (type) {
@@ -163,6 +173,7 @@ class LoadGenerator final {
              std::string payload) {
     stop_requested_.store(false);
     for (std::uint32_t i = 0; i < thread_count; ++i) {
+      ++active_worker_count_;
       workers_.emplace_back([this, channel_id = channel.id,
                              channel_type = channel.type, message_count,
                              interval_ms, payload, worker_index = i]() {
@@ -190,6 +201,7 @@ class LoadGenerator final {
                 std::chrono::milliseconds(interval_ms));
           }
         }
+        --active_worker_count_;
       });
     }
   }
@@ -202,6 +214,7 @@ class LoadGenerator final {
       }
     }
     workers_.clear();
+    active_worker_count_.store(0);
   }
 
   [[nodiscard]] std::vector<QueuedSend> drain() {
@@ -216,11 +229,17 @@ class LoadGenerator final {
   }
 
   [[nodiscard]] std::size_t worker_count() const noexcept {
-    return workers_.size();
+    return active_worker_count_.load();
+  }
+
+  [[nodiscard]] bool has_pending_messages() const {
+    std::scoped_lock lock(queue_mutex_);
+    return !queue_.empty();
   }
 
  private:
   std::atomic<bool> stop_requested_{false};
+  std::atomic<std::size_t> active_worker_count_{0};
   mutable std::mutex queue_mutex_;
   std::deque<QueuedSend> queue_;
   std::vector<std::thread> workers_;
@@ -330,38 +349,38 @@ bool process_client_command(const Rudp::Config::RuntimeProfile& profile,
   return true;
 }
 
-void run_bootstrap_commands(const Rudp::Config::RuntimeProfile& profile,
-                            Session& session,
-                            LoadGenerator& load_generator,
-                            const LogSink& logger,
-                            bool& should_exit) {
+[[nodiscard]] std::vector<std::string> load_bootstrap_commands(
+    const LogSink& logger) {
+  std::vector<std::string> commands;
   const char* path = std::getenv("RUDP_CLIENT_BOOTSTRAP_FILE");
   if (path == nullptr || *path == '\0') {
-    return;
+    return commands;
   }
 
   std::ifstream input(path);
   if (!input.is_open()) {
     log_line(logger, std::string("[client] failed to open bootstrap file: ") +
                          path);
-    return;
+    return commands;
   }
 
   std::string line;
-  while (!should_exit && std::getline(input, line)) {
+  while (std::getline(input, line)) {
     if (line.empty() || line.front() == '#') {
       continue;
     }
-    log_line(logger, "[client] bootstrap> " + line);
-    static_cast<void>(process_client_command(profile, session, load_generator,
-                                             logger, line, should_exit));
+    commands.push_back(line);
   }
+
+  return commands;
 }
 
 }  // namespace
 
 void run_client_app(const Rudp::Config::RuntimeProfile& profile,
                     const LogSink& logger) {
+  install_signal_handlers();
+  g_stop_requested.store(false);
   auto socket = BsdUdpSocket::create_non_blocking();
   if (!socket.has_value()) {
     return;
@@ -374,19 +393,34 @@ void run_client_app(const Rudp::Config::RuntimeProfile& profile,
   const EndpointKey server_endpoint{profile.remote_address, profile.remote_port};
   Session session(SessionRole::Client);
   LoadGenerator load_generator;
+  const auto bootstrap_commands = load_bootstrap_commands(logger);
+  bool bootstrap_applied = bootstrap_commands.empty();
+  bool stdin_enabled = ::isatty(STDIN_FILENO) != 0;
   log_line(logger, std::string("client targeting ") + profile.remote_address +
                        ':' + std::to_string(profile.remote_port));
-  log_line(logger,
-           "type a line to send it on the default channel; use: send <channel> <message>, /spawn <channel> <threads> <count> <interval-ms> <payload>, /workers, /stop-load, /channels, /quit");
+  if (stdin_enabled) {
+    log_line(logger,
+             "type a line to send it on the default channel; use: send <channel> <message>, /spawn <channel> <threads> <count> <interval-ms> <payload>, /workers, /stop-load, /channels, /quit");
+  } else {
+    log_line(logger,
+             "[client] stdin is not interactive; runtime commands disabled");
+  }
 
   bool should_exit = false;
-  run_bootstrap_commands(profile, session, load_generator, logger, should_exit);
   while (!should_exit) {
+    if (g_stop_requested.load()) {
+      should_exit = true;
+      break;
+    }
+
     fd_set readfds;
     FD_ZERO(&readfds);
     FD_SET(socket->native_handle(), &readfds);
-    FD_SET(STDIN_FILENO, &readfds);
-    const int max_fd = std::max(socket->native_handle(), STDIN_FILENO);
+    int max_fd = socket->native_handle();
+    if (stdin_enabled) {
+      FD_SET(STDIN_FILENO, &readfds);
+      max_fd = std::max(max_fd, STDIN_FILENO);
+    }
 
     timeval timeout{};
     timeout.tv_sec = 0;
@@ -405,15 +439,17 @@ void run_client_app(const Rudp::Config::RuntimeProfile& profile,
       }
     }
 
-    if (FD_ISSET(STDIN_FILENO, &readfds)) {
+    if (stdin_enabled && FD_ISSET(STDIN_FILENO, &readfds)) {
       std::string line;
       if (!std::getline(std::cin, line)) {
-        break;
-      }
-      static_cast<void>(process_client_command(profile, session, load_generator,
-                                               logger, line, should_exit));
-      if (should_exit) {
-        break;
+        stdin_enabled = false;
+      } else {
+        static_cast<void>(process_client_command(profile, session, load_generator,
+                                                 logger, line,
+                                                 should_exit));
+        if (should_exit) {
+          break;
+        }
       }
     }
 
@@ -435,12 +471,25 @@ void run_client_app(const Rudp::Config::RuntimeProfile& profile,
     }
 
     drain_client_events(session, logger);
+    if (!bootstrap_applied &&
+        session.connection_state() == ConnectionState::Established) {
+      for (const auto& command : bootstrap_commands) {
+        log_line(logger, "[client] bootstrap> " + command);
+        static_cast<void>(process_client_command(
+            profile, session, load_generator, logger, command, should_exit));
+        if (should_exit) {
+          break;
+        }
+      }
+      bootstrap_applied = true;
+    }
     if (session.connection_state() == ConnectionState::Reset) {
       log_line(logger, "[client] session entered Reset, exiting");
       should_exit = true;
     }
   }
 
+  log_line(logger, format_session_summary("[client]", session.stats()));
   load_generator.stop_all();
 }
 

@@ -9,6 +9,10 @@ namespace Rudp::Session
 {
   namespace
   {
+    constexpr std::uint32_t kInternalProbeChannelId = 0;
+    constexpr Rudp::ChannelType kInternalProbeChannelType =
+        Rudp::ChannelType::Unreliable;
+
 
     [[nodiscard]] bool is_acknowledged_by_remote(std::uint32_t seq,
                                                  std::uint32_t ack,
@@ -53,6 +57,20 @@ namespace Rudp::Session
       const auto clamped_retry_count = std::min<std::uint32_t>(retry_count, 4U);
       const auto rto = transport.initial_rto_ms << clamped_retry_count;
       return std::min(rto, transport.max_rto_ms);
+    }
+
+    [[nodiscard]] Header make_internal_probe_header(std::uint32_t conn_id,
+                                                    Rudp::Flags flags,
+                                                    const RxSessionState& rx)
+    {
+      Header header{};
+      header.conn_id = conn_id;
+      header.flags = flags;
+      header.channel_id = kInternalProbeChannelId;
+      header.channel_type = kInternalProbeChannelType;
+      header.ack = rx.next_expected;
+      header.ack_bits = rx.received_bits;
+      return header;
     }
 
   } // namespace
@@ -140,7 +158,7 @@ namespace Rudp::Session
     {
       return result;
     }
-    if (auto bytes = try_build_ack_only(conn_id, rx, tx); bytes.has_value())
+    if (auto bytes = try_build_probe_lane(conn_id, rx, tx); bytes.has_value())
     {
       return TxPollResult{
           .datagram = std::move(bytes),
@@ -149,7 +167,7 @@ namespace Rudp::Session
           .error_message = {},
       };
     }
-    if (auto bytes = try_build_keepalive(conn_id, rx, tx); bytes.has_value())
+    if (auto bytes = try_build_ack_only(conn_id, rx, tx); bytes.has_value())
     {
       return TxPollResult{
           .datagram = std::move(bytes),
@@ -346,35 +364,27 @@ namespace Rudp::Session
     return encoded;
   }
 
-  std::optional<std::vector<std::byte>> TxHandler::try_build_keepalive(
+  std::optional<std::vector<std::byte>> TxHandler::try_build_probe_lane(
       std::uint32_t conn_id,
       const RxSessionState &rx,
       TxSessionState &tx)
   {
-    if (tx.pong_pending)
+    if (tx.probe.pong_pending)
     {
-      Header header{};
-      header.conn_id = conn_id;
-      header.flags = static_cast<Rudp::Flags>(Rudp::Flag::Pong);
-      header.channel_type = Rudp::ChannelType::Unreliable;
-      header.ack = rx.next_expected;
-      header.ack_bits = rx.received_bits;
-      tx.pong_pending = false;
+      auto header = make_internal_probe_header(
+          conn_id, static_cast<Rudp::Flags>(Rudp::Flag::Pong), rx);
+      tx.probe.pong_pending = false;
       return Rudp::Codec::encode(header, {});
     }
 
-    if (!tx.ping_pending)
+    if (!tx.probe.ping_pending)
     {
       return std::nullopt;
     }
 
-    Header header{};
-    header.conn_id = conn_id;
-    header.flags = static_cast<Rudp::Flags>(Rudp::Flag::Ping);
-    header.channel_type = Rudp::ChannelType::Unreliable;
-    header.ack = rx.next_expected;
-    header.ack_bits = rx.received_bits;
-    tx.ping_pending = false;
+    auto header = make_internal_probe_header(
+        conn_id, static_cast<Rudp::Flags>(Rudp::Flag::Ping), rx);
+    tx.probe.ping_pending = false;
     return Rudp::Codec::encode(header, {});
   }
 
