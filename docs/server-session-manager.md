@@ -165,7 +165,5 @@ The split is:
 The manager skeleton is now functional, but a few higher-level policies are
 still open:
 
-- active-session endpoint mismatch policy
-- `conn_id` reuse policy after cleanup
 - idle-time cleanup / keepalive integration
 - any future reconnect policy

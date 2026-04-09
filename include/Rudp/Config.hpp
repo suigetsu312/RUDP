@@ -18,6 +18,8 @@ struct TransportSettings final {
   std::uint64_t handshake_linger_ms = 1000;
   std::uint64_t keepalive_idle_ms = 500;
   std::uint64_t idle_timeout_ms = 15000;
+  std::uint64_t reliable_ack_delay_ms = 2;
+  std::uint32_t fast_retx_evidence_threshold = 2;
   bool enable_activity_ack_only = false;
 };
 

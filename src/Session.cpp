@@ -18,6 +18,7 @@ namespace {
 void emit_local_error(RxSessionState& rx, std::string error_message) {
   rx.pending_events.push_back(SessionEvent{
       .type = SessionEvent::Type::Error,
+      .seq = 0,
       .channel_id = 0,
       .channel_type = Rudp::ChannelType::Unreliable,
       .payload = {},
@@ -31,6 +32,7 @@ void emit_control_event(RxSessionState& rx,
                         std::string error_message = {}) {
   rx.pending_events.push_back(SessionEvent{
       .type = type,
+      .seq = packet.header.seq,
       .channel_id = packet.header.channel_id,
       .channel_type = packet.header.channel_type,
       .payload = {},
@@ -161,6 +163,17 @@ void emit_connection_decision_events(RxSessionState& rx,
          state.last_tx_ms + Rudp::Config::current().transport.keepalive_idle_ms;
 }
 
+[[nodiscard]] bool should_schedule_reliable_ack(const SessionState& state,
+                                                std::uint64_t now_ms) {
+  if (state.connection_state != ConnectionState::Established ||
+      !state.tx.reliable_ack_pending || state.tx.ack_only_pending ||
+      state.tx.probe.ping_pending || state.tx.probe.pong_pending) {
+    return false;
+  }
+
+  return now_ms >= state.tx.reliable_ack_due_ms;
+}
+
 [[nodiscard]] bool should_timeout_idle_session(const SessionState& state,
                                                std::uint64_t now_ms) {
   if (state.connection_state != ConnectionState::Established) {
@@ -271,6 +284,8 @@ Session::Session(SessionRole role, std::uint32_t initial_seq)
                   .final_ack_linger_until_ms = 0,
                   .fin_pending = false,
                   .ack_only_pending = false,
+                  .reliable_ack_pending = false,
+                  .reliable_ack_due_ms = 0,
                   .activity_ack_pending = false,
                   .probe = {},
               },
@@ -290,7 +305,10 @@ std::optional<std::vector<std::byte>> Session::poll_tx(std::uint64_t now_ms) {
     return std::nullopt;
   }
 
-  if (should_schedule_activity_ack(state_, now_ms)) {
+  if (should_schedule_reliable_ack(state_, now_ms)) {
+    state_.tx.ack_only_pending = true;
+    state_.tx.reliable_ack_pending = false;
+  } else if (should_schedule_activity_ack(state_, now_ms)) {
     state_.tx.ack_only_pending = true;
   } else if (should_schedule_probe(state_, now_ms)) {
     state_.tx.probe.ping_pending = true;
@@ -316,6 +334,9 @@ std::optional<std::vector<std::byte>> Session::poll_tx(std::uint64_t now_ms) {
       record_outbound_stats(state_, *decoded, result.datagram->size(), now_ms,
                             result.retransmission);
       state_.tx.activity_ack_pending = false;
+      if (control_kind == ControlKind::Ack) {
+        state_.tx.reliable_ack_pending = false;
+      }
     }
   }
   return result.datagram;
@@ -365,7 +386,14 @@ void Session::on_datagram_received(std::span<const std::byte> bytes,
   }
 
   if (rx_result.schedule_ack_only) {
-    state_.tx.ack_only_pending = true;
+    if (control_kind == ControlKind::None &&
+        Rudp::isReliableChannel(decoded->header.channel_type)) {
+      state_.tx.reliable_ack_pending = true;
+      state_.tx.reliable_ack_due_ms =
+          now_ms + Rudp::Config::current().transport.reliable_ack_delay_ms;
+    } else {
+      state_.tx.ack_only_pending = true;
+    }
   }
 }
 

@@ -64,6 +64,7 @@ std::string format_session_event(std::string_view prefix,
                                  const Session::SessionEvent& event) {
   std::string line(prefix);
   line += " event=" + to_string(event.type);
+  line += " seq=" + std::to_string(event.seq);
   line += " channel_id=" + std::to_string(event.channel_id);
   line += " payload_size=" + std::to_string(event.payload.size());
   if (!event.error_message.empty()) {

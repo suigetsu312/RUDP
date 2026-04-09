@@ -643,6 +643,41 @@ TEST(SessionSkeletonTest,
   settings.transport.enable_activity_ack_only = previous;
 }
 
+TEST(SessionSkeletonTest, ReliableDataUsesShortDelayedAckCadence) {
+  auto& settings = Rudp::Config::mutable_current();
+  const auto previous_delay = settings.transport.reliable_ack_delay_ms;
+  settings.transport.reliable_ack_delay_ms = 2;
+
+  Session sender;
+  Session receiver(SessionRole::Server);
+  establish_connection(sender, receiver);
+  static_cast<void>(sender.drain_events());
+  static_cast<void>(receiver.drain_events());
+
+  const auto* text = reinterpret_cast<const std::byte*>("r");
+  sender.queue_send(7U, Rudp::ChannelType::ReliableUnordered,
+                    std::span<const std::byte>(text, 1U));
+  const auto reliable_data = sender.poll_tx(300U);
+  ASSERT_TRUE(reliable_data.has_value());
+
+  receiver.on_datagram_received(*reliable_data, 310U);
+  auto events = receiver.drain_events();
+  ASSERT_EQ(events.size(), 1U);
+  EXPECT_EQ(events.front().type, SessionEvent::Type::DataReceived);
+
+  const auto too_early = receiver.poll_tx(311U);
+  EXPECT_FALSE(too_early.has_value());
+
+  const auto delayed_ack = receiver.poll_tx(312U);
+  const auto ack_header = decode_header_or_die(delayed_ack);
+  log_header("receiver delayed ACK for reliable data", ack_header);
+  EXPECT_TRUE(ack_header.hasFlag(Rudp::Flag::Ack));
+  EXPECT_FALSE(ack_header.hasFlag(Rudp::Flag::Ping));
+  EXPECT_FALSE(ack_header.hasFlag(Rudp::Flag::Pong));
+
+  settings.transport.reliable_ack_delay_ms = previous_delay;
+}
+
 // Verifies invalid control-flag combinations do not mutate lifecycle state and
 // are surfaced as an Error event.
 TEST(SessionSkeletonTest, InvalidControlFlagCombinationDoesNotMutateState) {

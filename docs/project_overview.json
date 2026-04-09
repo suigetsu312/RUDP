@@ -6,7 +6,7 @@
     "generated_on": "2026-04-06",
     "generated_from_workspace": "/home/natsu/project/RUDP",
     "primary_goal": "Implement a lightweight reliable UDP protocol with channel-specific delivery semantics and a shared connection lifecycle.",
-    "status_summary": "Prototype / incomplete implementation. Core packet encode/decode, session orchestration, handshake skeleton, selective ACK state, and some close/reset handling exist. Many protocol behaviors remain partial."
+    "status_summary": "Working transport prototype with handshake, selective ACKs, retransmission, close/reset handling, server-side session management, BSD runtime, YAML profiles, and Docker netem experiments. Remaining gaps are concentrated in reconnect policy, robustness tuning under extreme reorder, and documentation cleanup."
   },
   "build": {
     "build_system": "CMake",
@@ -45,11 +45,12 @@
     ],
     "dependencies": [
       "Threads",
-      "GTest for unit tests"
+        "GTest for unit tests",
+        "spdlog for runtime logging"
     ],
     "verified_locally": {
       "cmake_build_build_local": "passes",
-      "cmake_configure_build_tests": "fails because GTestConfig.cmake is not installed in the current environment"
+        "cmake_configure_build_tests": "passes via vcpkg/toolchain in the current workspace"
     }
   },
   "documents": {
@@ -73,7 +74,7 @@
     },
     {
       "file": "include/Rudp/Utils.hpp",
-      "responsibility": "Endian helpers for reading/writing 32-bit and 64-bit integers from byte spans."
+      "responsibility": "Endian helpers plus small shared string/enum utility functions used across config/runtime code."
     },
     {
       "file": "include/Rudp/Codec.hpp",
@@ -121,7 +122,7 @@
     },
     {
       "file": "src/Session.cpp",
-      "responsibility": "Coordinates TxHandler and RxHandler. Applies incoming ACK data to TX state before handing packet to RX path. Converts rx.should_ack into tx.ack_only_pending.",
+      "responsibility": "Coordinates TxHandler and RxHandler. Applies incoming ACK data to TX state before handing packet to RX path. Schedules ACK-only responses and probe-lane PING/PONG handling.",
       "notes": [
         "Acts as orchestration layer; some lifecycle policy still bleeds into handlers."
       ]
@@ -147,9 +148,9 @@
     },
     {
       "file": "src/main.cpp",
-      "responsibility": "Minimal demo stub that only prints a message.",
+      "responsibility": "Thin CLI entrypoint that dispatches into the BSD runtime using YAML runtime profiles.",
       "notes": [
-        "Not a real integration example."
+        "Real runtime integration now lives in BsdRuntime/BsdClientApp/BsdServerApp."
       ]
     }
   ],
@@ -174,7 +175,7 @@
         "Graceful close request leading to FIN"
       ],
       "notes": [
-        "Tests were authored but not executed in the current environment because GTest is missing."
+        "Tests are exercised locally through the build/unit_tests target."
       ]
     }
   ],
@@ -195,7 +196,7 @@
       "ReliableOrdered",
       "ReliableUnordered",
       "Unreliable",
-      "MonotonicState"
+      "MonotonicState (legacy / experimental in code, not part of current formal spec)"
     ],
     "session_events": [
       "DataReceived",
@@ -209,6 +210,10 @@
         "fields": [
           "role",
           "connection_state",
+          "established_since_ms",
+          "last_rx_ms",
+          "last_tx_ms",
+          "stats",
           "tx",
           "rx"
         ]
@@ -223,7 +228,9 @@
           "syn_ack_pending",
           "final_ack_pending",
           "fin_pending",
-          "ack_only_pending"
+          "ack_only_pending",
+          "activity_ack_pending",
+          "probe"
         ]
       },
       "RxSessionState": {
@@ -232,8 +239,7 @@
           "received_bits",
           "ordered_reorder_buffer",
           "monotonic_versions",
-          "pending_events",
-          "should_ack"
+          "pending_events"
         ]
       }
     }
@@ -249,7 +255,8 @@
       "TX inflight map keyed by sequence number",
       "Remote cumulative ACK / AckBits application removes acknowledged inflight packets",
       "Receive path tracks next_expected and received_bits for reliable/control packets",
-      "Retransmit on timeout using simple fixed initial RTO"
+      "Retransmit on timeout using bounded exponential backoff",
+      "Fast retransmit driven by AckBits gap detection"
     ],
     "handshake": [
       "Client auto-sends SYN from Closed on first poll_tx",
@@ -262,13 +269,15 @@
       "request_close on Established moves local state to Closing and schedules FIN",
       "Receiving FIN moves local state to Closing and emits ConnectionClosed event",
       "Receiving RST moves local state to Reset and emits ConnectionReset event",
-      "Receiver schedules ACK-only response on control packets"
+      "Receiver schedules ACK-only response on control packets",
+      "Handshake linger resends final ACK on duplicate SYN-ACK",
+      "FIN acknowledgement closes the initiator cleanly"
     ],
     "channels": {
-      "ReliableOrdered": "Packet retained in ordered_reorder_buffer, but ordered delivery drain is not implemented.",
-      "ReliableUnordered": "Immediately emits DataReceived event; duplicate suppression is not implemented.",
+      "ReliableOrdered": "Packet retained in ordered_reorder_buffer and drained in order once gaps are filled.",
+      "ReliableUnordered": "Immediately emits DataReceived event after duplicate/stale suppression through reliable ACK-window bookkeeping.",
       "Unreliable": "Immediately emits DataReceived event.",
-      "MonotonicState": "Parses first 4 payload bytes as version and only emits when version is newer by signed serial-number comparison."
+      "MonotonicState": "Legacy experimental path retained in code; no longer part of the formal protocol spec."
     }
   },
   "known_gaps": [
@@ -283,29 +292,14 @@
       "description": "Exact receive-side Ack/AckBits semantics are incomplete; old/duplicate/out-of-order reliable packets are not fully modeled."
     },
     {
-      "area": "reliable_ordered_delivery",
-      "severity": "high",
-      "description": "Reliable ordered reorder buffer exists but contiguous drain / in-order event delivery is not implemented."
-    },
-    {
-      "area": "reliable_unordered_duplicates",
-      "severity": "medium",
-      "description": "Reliable unordered packets are delivered immediately without duplicate suppression."
-    },
-    {
       "area": "fin_rst_state_machine",
       "severity": "medium",
-      "description": "FIN/RST handling is partial. There is no full bidirectional close state machine, no terminal closed-after-fin path, and no linger semantics."
-    },
-    {
-      "area": "fast_retransmit",
-      "severity": "medium",
-      "description": "Fast retransmit based on AckBits gap detection is not implemented."
+      "description": "FIN/RST handling covers the implemented close path, but there is still no richer bidirectional TCP-like close state machine."
     },
     {
       "area": "rto_policy",
       "severity": "medium",
-      "description": "Retransmission timeout/backoff policy is fixed and simplistic."
+      "description": "Retransmission timeout/backoff policy is intentionally simple and not yet tuned with adaptive RTT estimation."
     },
     {
       "area": "connection_bootstrap_policy",
@@ -313,33 +307,21 @@
       "description": "Client handshake starts implicitly on first poll_tx while Closed. This may not be the desired API boundary for a production design."
     },
     {
-      "area": "conn_id_management",
+      "area": "reconnect_policy",
       "severity": "medium",
-      "description": "Connection identifier exists in Header but there is no allocation, negotiation, validation, or session binding logic."
+      "description": "conn_id allocation, validation, and session binding exist, but there is no reconnect/resume policy or peer-authenticated rebinding design."
     },
     {
       "area": "error_reporting",
       "severity": "low",
-      "description": "SessionEvent::Error exists but is effectively unused."
-    },
-    {
-      "area": "main_demo",
-      "severity": "low",
-      "description": "src/main.cpp is only a print stub and does not exercise the library."
-    },
-    {
-      "area": "test_execution_environment",
-      "severity": "low",
-      "description": "Unit tests exist but cannot currently be configured locally due missing GTest package."
+      "description": "SessionEvent::Error is used, but higher-level experiment result classification is still log-driven rather than structured."
     }
   ],
   "inline_todos_present_in_code": [
-    "Implement fast retransmit using AckBits gap detection",
     "Tune retransmission timeout/backoff policy",
-    "Implement exact reliable ACK window update semantics per spec",
-    "Implement FIN/RST handling more completely",
-    "Implement ordered reliable reorder and contiguous drain",
-    "Implement reliable unordered duplicate suppression policy"
+    "Harden reliable ordered behavior under aggressive reorder stress",
+    "Decide whether the legacy MonotonicState path should stay or be removed",
+    "Design the minimal reconnect / resume policy"
   ],
   "api_surface": {
     "Session": {
@@ -362,8 +344,8 @@
     }
   },
   "coupling_and_design_observations": [
-    "Session is a thin facade but still contains lifecycle glue by converting rx.should_ack into tx.ack_only_pending after every received packet.",
-    "TxHandler and RxHandler both mutate parts of the shared state model and are coupled through scheduling flags such as syn_ack_pending, final_ack_pending, fin_pending, and ack_only_pending.",
+    "Session is a thin facade but still contains lifecycle glue by converting RX scheduling results into tx.ack_only_pending after every received packet.",
+    "TxHandler and RxHandler both mutate parts of the shared state model and are coupled through scheduling flags such as syn_ack_pending, final_ack_pending, fin_pending, ack_only_pending, and probe state.",
     "Connection state is stored at SessionState level but passed by reference into handlers rather than being encapsulated in a dedicated state machine object.",
     "Control flow priority in TxHandler is handshake/control first, then retransmit, then ack-only, then fresh app data.",
     "PacketView payload lifetime is borrowed; higher-level code must not persist it without copying. RxHandler already copies when storing or emitting data."
@@ -379,7 +361,7 @@
     },
     {
       "name": "Formalize reliable receive window",
-      "motivation": "RX Ack/AckBits semantics, duplicate handling, and ordered delivery are only partially implemented."
+      "motivation": "RX Ack/AckBits semantics and delivery behavior are implemented, but robustness under extreme reorder/loss still needs tuning."
     },
     {
       "name": "Resolve protocol/spec drift before deeper changes",

@@ -22,6 +22,7 @@
 #include "Rudp/BsdUdpSocket.hpp"
 #include "Rudp/Config.hpp"
 #include "Rudp/ServerSessionManager.hpp"
+#include "Rudp/Utils.hpp"
 
 namespace Rudp::Runtime {
 namespace {
@@ -38,20 +39,6 @@ void handle_stop_signal(int) { g_stop_requested.store(true); }
 void install_signal_handlers() {
   std::signal(SIGINT, handle_stop_signal);
   std::signal(SIGTERM, handle_stop_signal);
-}
-
-[[nodiscard]] std::string to_string(Rudp::ChannelType type) {
-  switch (type) {
-    case Rudp::ChannelType::ReliableOrdered:
-      return "reliable_ordered";
-    case Rudp::ChannelType::ReliableUnordered:
-      return "reliable_unordered";
-    case Rudp::ChannelType::Unreliable:
-      return "unreliable";
-    case Rudp::ChannelType::MonotonicState:
-      return "monotonic_state";
-  }
-  return "unknown";
 }
 
 [[nodiscard]] std::uint64_t now_ms() {
@@ -131,7 +118,7 @@ void log_channels(const Rudp::Config::RuntimeProfile& profile,
   for (const auto& channel : profile.channels) {
     std::string line = "[server] channel id=" + std::to_string(channel.id);
     line += " name=" + channel.name;
-    line += " type=" + to_string(channel.type);
+    line += " type=" + Rudp::Utils::channelTypeName(channel.type);
     if (channel.is_default) {
       line += " default=true";
     }

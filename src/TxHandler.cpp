@@ -128,7 +128,12 @@ namespace Rudp::Session
       auto it = tx.inflight.find(seq);
       if (it != tx.inflight.end())
       {
-        it->second.fast_retx_pending = true;
+        ++it->second.gap_evidence_count;
+        if (it->second.gap_evidence_count >=
+            Rudp::Config::current().transport.fast_retx_evidence_threshold)
+        {
+          it->second.fast_retx_pending = true;
+        }
       }
     }
     return result;
@@ -288,6 +293,7 @@ namespace Rudp::Session
       auto encoded = Rudp::Codec::encode(header, entry.packet.payload);
       entry.last_send_ms = now_ms;
       ++entry.retry_count;
+      entry.gap_evidence_count = 0;
       entry.fast_retx_pending = false;
       return TxPollResult{
           .datagram = std::move(encoded),
@@ -356,6 +362,7 @@ namespace Rudp::Session
           .first_send_ms = now_ms,
           .last_send_ms = now_ms,
           .retry_count = 0,
+          .gap_evidence_count = 0,
           .fast_retx_pending = false,
       };
       tx.inflight.emplace(entry.packet.header.seq, std::move(entry));
@@ -454,6 +461,7 @@ namespace Rudp::Session
         .first_send_ms = now_ms,
         .last_send_ms = now_ms,
         .retry_count = 0,
+        .gap_evidence_count = 0,
         .fast_retx_pending = false,
     };
     tx.inflight.emplace(header.seq, std::move(entry));

@@ -9,6 +9,7 @@ BOOTSTRAP_FILE="${REPO_ROOT}/tmp/client.commands"
 DEFAULT_CLIENT_COMMAND=${RUDP_CLIENT_COMMAND:-"/spawn stream 4 0 5 burst"}
 DEFAULT_BUILD_POLICY=${RUDP_DOCKER_BUILD:-auto}
 DEFAULT_REORDER_DELAY=${RUDP_NETEM_REORDER_DELAY:-20ms}
+EXPERIMENT_NAME_OVERRIDE=${RUDP_EXPERIMENT_NAME:-}
 RUN_ID=""
 EXPERIMENT_NAME=""
 LOG_DIR=""
@@ -33,6 +34,7 @@ Examples:
 Environment:
   RUDP_CLIENT_COMMAND   bootstrap command written to tmp/client.commands
                         default: ${DEFAULT_CLIENT_COMMAND}
+  RUDP_EXPERIMENT_NAME  override experiment/log directory name
   RUDP_DOCKER_BUILD     auto|always|never
                         auto: build only if images are missing
                         always: rebuild before compose up
@@ -62,7 +64,7 @@ EOF
 init_log_dir() {
   local experiment="$1"
   RUN_ID="$(date +%Y%m%d%H%M%S)"
-  EXPERIMENT_NAME="${experiment}"
+  EXPERIMENT_NAME="${EXPERIMENT_NAME_OVERRIDE:-${experiment}}"
   LOG_DIR="${REPO_ROOT}/logs/${EXPERIMENT_NAME}/${RUN_ID}"
   mkdir -p "${LOG_DIR}"
   export RUDP_RUNTIME_SERVER_LOG_PATH="/workspace/logs/${EXPERIMENT_NAME}/${RUN_ID}/server.log"

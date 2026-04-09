@@ -61,6 +61,7 @@ run_case() {
 
   export RUDP_CLIENT_COMMAND="${client_command}"
   export RUDP_DOCKER_BUILD="${CURRENT_BUILD_POLICY}"
+  export RUDP_EXPERIMENT_NAME="${label}"
   "${EXPERIMENT_SCRIPT}" "$@"
 
   if [[ "${CURRENT_BUILD_POLICY}" == "always" ]]; then
@@ -73,6 +74,7 @@ run_case() {
   echo "--- tearing down ${label}"
   "${EXPERIMENT_SCRIPT}" down
   unset RUDP_CLIENT_COMMAND
+  unset RUDP_EXPERIMENT_NAME
 }
 
 main() {

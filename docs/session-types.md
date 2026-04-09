@@ -166,9 +166,8 @@ Intended meaning:
 - `false`: resend only if timeout expires
 - `true`: resend as soon as TX scheduling reaches retransmit selection
 
-Current code already consumes this flag in
-`TxHandler::try_build_retransmit(...)`, but the logic that sets the flag from
-incoming selective ACK gap information is still TODO in
+Current code consumes this flag in `TxHandler::try_build_retransmit(...)` and
+sets it from incoming selective ACK gap information in
 `TxHandler::on_remote_ack(...)`.
 
 In short:
@@ -224,7 +223,7 @@ The delivery semantic of the received packet:
 - `ReliableOrdered`
 - `ReliableUnordered`
 - `Unreliable`
-- `MonotonicState`
+- `MonotonicState` (legacy / experimental in code)
 
 ### `payload`
 
@@ -247,8 +246,11 @@ struct TxSessionState final {
   std::map<std::uint32_t, TxEntry> inflight;
   bool syn_ack_pending = false;
   bool final_ack_pending = false;
+  std::uint64_t final_ack_linger_until_ms = 0;
   bool fin_pending = false;
   bool ack_only_pending = false;
+  bool activity_ack_pending = false;
+  ProbeTxState probe;
 };
 ```
 
@@ -287,8 +289,8 @@ Interpretation relative to `remote_ack`:
 - bit 1 acknowledges `remote_ack + 2`
 - and so on
 
-This is used to detect out-of-order reception on the peer side and is the
-natural input for future fast retransmit logic.
+This is used to detect out-of-order reception on the peer side and drives fast
+retransmit logic when selective ACK gaps appear.
 
 ## `TxSessionState::pending_send`
 
@@ -331,6 +333,16 @@ Schedule a pure ACK packet with no payload.
 This is usually set when RX transport bookkeeping decides an ACK response should
 be sent, but there is no payload packet ready to piggyback that ACK.
 
+## `TxSessionState::activity_ack_pending`
+
+Tracks a deferred ACK-only response for one-way traffic when the optional
+activity-ACK policy is enabled.
+
+## `TxSessionState::probe`
+
+Internal probe-lane state used for transport `PING/PONG` scheduling and RTT
+sampling. This is not an application-visible channel.
+
 ## `RxSessionState`
 
 ```cpp
@@ -342,7 +354,6 @@ struct RxSessionState final {
   bool ordered_delivery_started = false;
   std::unordered_map<std::uint32_t, std::uint32_t> monotonic_versions;
   std::vector<SessionEvent> pending_events;
-  bool should_ack = false;
 };
 ```
 
@@ -388,7 +399,7 @@ delivered in order yet.
 Current status:
 
 - packets are stored here
-- contiguous in-order drain logic is still TODO
+- contiguous in-order drain is implemented
 
 ## `RxSessionState::next_ordered_delivery`
 
@@ -411,9 +422,9 @@ because reliable sequence `0` can be valid after wrap-around.
 
 ## `RxSessionState::monotonic_versions`
 
-Per-channel latest version for `MonotonicState`.
-
-This prevents old state snapshots from overwriting newer ones.
+Legacy per-channel latest-version storage for the experimental
+`MonotonicState` path that still exists in code. The formal protocol spec no
+longer advertises `MonotonicState` as a supported channel semantic.
 
 ## `RxSessionState::pending_events`
 
@@ -421,7 +432,7 @@ Accumulated outward-facing events waiting for the application to consume them.
 
 `Session::drain_events()` empties this vector and returns its content.
 
-## `RxSessionState::should_ack`
+## `RxPacketResult::schedule_ack_only`
 
 A bridge flag from RX bookkeeping to TX scheduling.
 
@@ -439,6 +450,10 @@ This keeps RX from sending directly and preserves `Session` as the orchestrator.
 struct SessionState final {
   SessionRole role = SessionRole::Client;
   ConnectionState connection_state = ConnectionState::Closed;
+  std::uint64_t established_since_ms = 0;
+  std::uint64_t last_rx_ms = 0;
+  std::uint64_t last_tx_ms = 0;
+  SessionStats stats;
   TxSessionState tx;
   RxSessionState rx;
 };

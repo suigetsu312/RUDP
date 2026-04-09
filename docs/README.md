@@ -7,6 +7,8 @@ Files:
 
 - `Protocol.md`: current protocol draft and packet/layout notes
 - `architecture.md`: high-level component diagram
+- `protocol-comparison.md`: feature and benchmark comparison against ENet, KCP,
+  RakNet, and SteamNetworkingSockets, plus a matching experiment plan
 - `project_overview.json`: machine-readable project summary for external review
 - `server-session-manager.md`: current server-side multi-session routing model,
   including pending/active ownership, `conn_id` allocation, and cleanup rules

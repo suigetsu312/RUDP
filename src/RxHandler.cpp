@@ -18,6 +18,7 @@ namespace Rudp::Session
     {
       return SessionEvent{
           .type = SessionEvent::Type::DataReceived,
+          .seq = packet.header.seq,
           .channel_id = packet.header.channel_id,
           .channel_type = packet.header.channel_type,
           .payload =
@@ -65,6 +66,7 @@ namespace Rudp::Session
       {
         rx.pending_events.push_back(SessionEvent{
             .type = SessionEvent::Type::DataReceived,
+            .seq = it->second.header.seq,
             .channel_id = it->second.header.channel_id,
             .channel_type = it->second.header.channel_type,
             .payload = it->second.payload,

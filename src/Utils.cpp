@@ -1,5 +1,7 @@
 #include "Rudp/Utils.hpp"
 
+#include <cctype>
+
 namespace Rudp::Utils {
 
 std::uint32_t readU32(std::span<const std::byte> bytes,
@@ -43,6 +45,57 @@ void writeU64(std::span<std::byte> bytes, std::size_t offset,
     const auto shift = static_cast<unsigned>((7 - index) * 8);
     bytes[offset + index] = static_cast<std::byte>((value >> shift) & 0xff);
   }
+}
+
+std::string trim(std::string_view value) {
+  std::size_t first = 0;
+  while (first < value.size() &&
+         std::isspace(static_cast<unsigned char>(value[first])) != 0) {
+    ++first;
+  }
+
+  std::size_t last = value.size();
+  while (last > first &&
+         std::isspace(static_cast<unsigned char>(value[last - 1U])) != 0) {
+    --last;
+  }
+
+  return std::string(value.substr(first, last - first));
+}
+
+std::string unquote(std::string_view value) {
+  if (value.size() >= 2 &&
+      ((value.front() == '"' && value.back() == '"') ||
+       (value.front() == '\'' && value.back() == '\''))) {
+    return std::string(value.substr(1, value.size() - 2));
+  }
+  return std::string(value);
+}
+
+bool parseBool(std::string_view value, bool& target) noexcept {
+  if (value == "true") {
+    target = true;
+    return true;
+  }
+  if (value == "false") {
+    target = false;
+    return true;
+  }
+  return false;
+}
+
+std::string channelTypeName(Rudp::ChannelType type) {
+  switch (type) {
+    case Rudp::ChannelType::ReliableOrdered:
+      return "reliable_ordered";
+    case Rudp::ChannelType::ReliableUnordered:
+      return "reliable_unordered";
+    case Rudp::ChannelType::Unreliable:
+      return "unreliable";
+    case Rudp::ChannelType::MonotonicState:
+      return "monotonic_state";
+  }
+  return "unknown";
 }
 
 }  // namespace Rudp::Utils

@@ -1,4 +1,5 @@
 #include "Rudp/Config.hpp"
+#include "Rudp/Utils.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -12,31 +13,6 @@ namespace Rudp::Config {
 namespace {
 
 Settings g_settings{};
-
-[[nodiscard]] std::string trim(std::string_view value) {
-  std::size_t first = 0;
-  while (first < value.size() &&
-         std::isspace(static_cast<unsigned char>(value[first])) != 0) {
-    ++first;
-  }
-
-  std::size_t last = value.size();
-  while (last > first &&
-         std::isspace(static_cast<unsigned char>(value[last - 1U])) != 0) {
-    --last;
-  }
-
-  return std::string(value.substr(first, last - first));
-}
-
-[[nodiscard]] std::string unquote(std::string_view value) {
-  if (value.size() >= 2 &&
-      ((value.front() == '"' && value.back() == '"') ||
-       (value.front() == '\'' && value.back() == '\''))) {
-    return std::string(value.substr(1, value.size() - 2));
-  }
-  return std::string(value);
-}
 
 template <typename Integer>
 bool assign_integer(Integer& target,
@@ -54,8 +30,6 @@ bool assign_integer(Integer& target,
     return false;
   }
 }
-
-[[nodiscard]] bool parse_bool(std::string_view value, bool& target);
 
 bool apply_kv(Settings& settings,
               std::string_view key,
@@ -85,9 +59,17 @@ bool apply_kv(Settings& settings,
     return assign_integer(settings.transport.idle_timeout_ms, value,
                           error_message, key);
   }
+  if (key == "RUDP_TRANSPORT_RELIABLE_ACK_DELAY_MS") {
+    return assign_integer(settings.transport.reliable_ack_delay_ms, value,
+                          error_message, key);
+  }
+  if (key == "RUDP_TRANSPORT_FAST_RETX_EVIDENCE_THRESHOLD") {
+    return assign_integer(settings.transport.fast_retx_evidence_threshold,
+                          value, error_message, key);
+  }
   if (key == "RUDP_TRANSPORT_ENABLE_ACTIVITY_ACK_ONLY") {
     bool parsed = false;
-    if (!parse_bool(value, parsed)) {
+    if (!Rudp::Utils::parseBool(value, parsed)) {
       if (error_message != nullptr) {
         *error_message = "invalid boolean for key " + std::string(key);
       }
@@ -97,7 +79,7 @@ bool apply_kv(Settings& settings,
     return true;
   }
   if (key == "RUDP_RUNTIME_SERVER_BIND_ADDRESS") {
-    settings.runtime.server_bind_address = unquote(value);
+    settings.runtime.server_bind_address = Rudp::Utils::unquote(value);
     return true;
   }
   if (key == "RUDP_RUNTIME_SERVER_PORT") {
@@ -105,7 +87,7 @@ bool apply_kv(Settings& settings,
                           key);
   }
   if (key == "RUDP_RUNTIME_CLIENT_SERVER_ADDRESS") {
-    settings.runtime.client_server_address = unquote(value);
+    settings.runtime.client_server_address = Rudp::Utils::unquote(value);
     return true;
   }
   if (key == "RUDP_RUNTIME_CLIENT_SERVER_PORT") {
@@ -113,7 +95,7 @@ bool apply_kv(Settings& settings,
                           error_message, key);
   }
   if (key == "RUDP_RUNTIME_CLIENT_BIND_ADDRESS") {
-    settings.runtime.client_bind_address = unquote(value);
+    settings.runtime.client_bind_address = Rudp::Utils::unquote(value);
     return true;
   }
   if (key == "RUDP_RUNTIME_SOCKET_BUFFER_SIZE") {
@@ -133,11 +115,11 @@ bool apply_kv(Settings& settings,
                           error_message, key);
   }
   if (key == "RUDP_RUNTIME_SERVER_LOG_PATH") {
-    settings.runtime.server_log_path = unquote(value);
+    settings.runtime.server_log_path = Rudp::Utils::unquote(value);
     return true;
   }
   if (key == "RUDP_RUNTIME_CLIENT_LOG_PATH") {
-    settings.runtime.client_log_path = unquote(value);
+    settings.runtime.client_log_path = Rudp::Utils::unquote(value);
     return true;
   }
   return true;
@@ -204,18 +186,6 @@ bool assign_yaml_integer(Integer& target,
   return count;
 }
 
-[[nodiscard]] bool parse_bool(std::string_view value, bool& target) {
-  if (value == "true") {
-    target = true;
-    return true;
-  }
-  if (value == "false") {
-    target = false;
-    return true;
-  }
-  return false;
-}
-
 [[nodiscard]] bool parse_key_value(std::string_view line,
                                    std::string& key,
                                    std::string& value) {
@@ -223,8 +193,9 @@ bool assign_yaml_integer(Integer& target,
   if (separator == std::string_view::npos) {
     return false;
   }
-  key = trim(line.substr(0, separator));
-  value = unquote(trim(line.substr(separator + 1U)));
+  key = Rudp::Utils::trim(line.substr(0, separator));
+  value = Rudp::Utils::unquote(
+      Rudp::Utils::trim(line.substr(separator + 1U)));
   return true;
 }
 
@@ -323,7 +294,7 @@ bool apply_channel_field(ChannelDefinition& channel,
     return true;
   }
   if (key == "default") {
-    if (!parse_bool(value, channel.is_default)) {
+    if (!Rudp::Utils::parseBool(value, channel.is_default)) {
       if (error_message != nullptr) {
         *error_message = "channels[].default must be true or false";
       }
@@ -345,7 +316,7 @@ bool apply_profile_yaml(RuntimeProfile& profile,
 
   while (std::getline(input, line)) {
     ++line_number;
-    const auto trimmed = trim(line);
+    const auto trimmed = Rudp::Utils::trim(line);
     if (trimmed.empty() || trimmed.front() == '#') {
       continue;
     }
@@ -475,7 +446,7 @@ bool load_from_env_file(const std::filesystem::path& path,
   std::size_t line_number = 0;
   while (std::getline(input, line)) {
     ++line_number;
-    const auto trimmed = trim(line);
+    const auto trimmed = Rudp::Utils::trim(line);
     if (trimmed.empty() || trimmed.front() == '#') {
       continue;
     }
@@ -488,9 +459,10 @@ bool load_from_env_file(const std::filesystem::path& path,
       return false;
     }
 
-    const auto key = trim(std::string_view(trimmed).substr(0, separator));
+    const auto key =
+        Rudp::Utils::trim(std::string_view(trimmed).substr(0, separator));
     const auto value =
-        trim(std::string_view(trimmed).substr(separator + 1U));
+        Rudp::Utils::trim(std::string_view(trimmed).substr(separator + 1U));
     if (!apply_kv(loaded, key, value, error_message)) {
       return false;
     }

@@ -143,6 +143,18 @@ If you want to run the whole matrix unattended, use:
 ./scripts/run_netem_matrix.zsh 300
 ```
 
+Export final client/server summaries from all experiment logs into one CSV:
+
+```bash
+./scripts/export_experiment_csv.zsh
+```
+
+Default output:
+
+```text
+logs/experiment_summary.csv
+```
+
 Here `count=0` means "keep sending until the experiment is torn down".
 
 The matrix runner will:

@@ -22,11 +22,12 @@ flowchart TD
     Tx --> AckTx[Apply remote Ack/AckBits]
     Tx --> Retx[Retransmit / backoff / retry limit]
     Tx --> ControlTx[Build SYN ACK FIN ACK-only]
+    Tx --> ProbeTx[Build probe-lane PING PONG]
 
     Rx --> AckRx[Track next_expected / AckBits]
     Rx --> Ordered[Reliable ordered reorder + contiguous drain]
     Rx --> Unordered[Reliable unordered immediate delivery]
-    Rx --> Mono[Monotonic state filter]
+    Rx --> ProbeRx[Probe-lane PING PONG handling]
 
     Manager --> Outbound[OutboundDatagram endpoint + bytes]
 ```
@@ -43,6 +44,7 @@ flowchart TD
   - lifecycle state machine
   - transport ACK processing
   - channel delivery semantics
+  - probe-lane RTT / liveness measurement
   - handshake linger and FIN acknowledgement behavior
 - `poll_tx()` at the manager layer currently collects at most one datagram per
   pending session and one datagram per active session per poll cycle.

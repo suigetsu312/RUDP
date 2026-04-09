@@ -78,7 +78,7 @@ This is different from timeout-based retransmission:
 
 `RxHandler` only marks intent:
 
-- `rx.should_ack = true`
+- `RxPacketResult.schedule_ack_only = true`
 
 Then `Session` converts that into:
 
@@ -95,7 +95,7 @@ Both use reliable sequence tracking, but their delivery policy differs.
 
 - packet contributes to ACK bookkeeping
 - packet may be stored for later in-order delivery
-- current contiguous drain behavior is still TODO
+- contiguous in-order drain runs when the delivery gap is filled
 
 ### Reliable Unordered
 

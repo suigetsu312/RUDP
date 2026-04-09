@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include "Rudp/Config.hpp"
 #include "Rudp/SessionTypes.hpp"
 #include "Rudp/TxHandler.hpp"
 
@@ -37,6 +38,11 @@ void seed_inflight(TxSessionState& tx,
 // Verifies on_remote_ack marks every missing inflight packet between the ACK
 // front and the furthest selectively acknowledged future packet.
 TEST(TxHandlerAckTest, AckBitsGapDetectionMarksMultipleMissingPackets) {
+  auto& settings = Rudp::Config::mutable_current();
+  const auto previous_threshold =
+      settings.transport.fast_retx_evidence_threshold;
+  settings.transport.fast_retx_evidence_threshold = 1;
+
   TxHandler handler;
   TxSessionState tx;
   seed_inflight(tx, {100U, 101U, 102U, 103U, 104U, 105U, 106U, 107U});
@@ -63,6 +69,8 @@ TEST(TxHandlerAckTest, AckBitsGapDetectionMarksMultipleMissingPackets) {
   EXPECT_EQ(tx.inflight.find(104U), tx.inflight.end());
   EXPECT_EQ(tx.inflight.find(106U), tx.inflight.end());
   EXPECT_EQ(tx.inflight.find(107U), tx.inflight.end());
+
+  settings.transport.fast_retx_evidence_threshold = previous_threshold;
 }
 
 // Verifies no fast retransmit candidates are marked when the peer reports only
@@ -80,6 +88,32 @@ TEST(TxHandlerAckTest, ZeroAckBitsDoesNotMarkFastRetransmitCandidates) {
   EXPECT_FALSE(tx.inflight.at(100U).fast_retx_pending);
   EXPECT_FALSE(tx.inflight.at(101U).fast_retx_pending);
   EXPECT_FALSE(tx.inflight.at(102U).fast_retx_pending);
+}
+
+TEST(TxHandlerAckTest, GapEvidenceThresholdDelaysFastRetransmitMarking) {
+  auto& settings = Rudp::Config::mutable_current();
+  const auto previous_threshold =
+      settings.transport.fast_retx_evidence_threshold;
+  settings.transport.fast_retx_evidence_threshold = 2;
+
+  TxHandler handler;
+  TxSessionState tx;
+  seed_inflight(tx, {100U, 101U, 102U, 103U});
+
+  const std::uint32_t ack = 100U;
+  const std::uint64_t ack_bits = (1ULL << 1U) | (1ULL << 2U);
+
+  static_cast<void>(handler.on_remote_ack(ack, ack_bits, tx));
+  ASSERT_NE(tx.inflight.find(100U), tx.inflight.end());
+  EXPECT_EQ(tx.inflight.at(100U).gap_evidence_count, 1U);
+  EXPECT_FALSE(tx.inflight.at(100U).fast_retx_pending);
+
+  static_cast<void>(handler.on_remote_ack(ack, ack_bits, tx));
+  ASSERT_NE(tx.inflight.find(100U), tx.inflight.end());
+  EXPECT_EQ(tx.inflight.at(100U).gap_evidence_count, 2U);
+  EXPECT_TRUE(tx.inflight.at(100U).fast_retx_pending);
+
+  settings.transport.fast_retx_evidence_threshold = previous_threshold;
 }
 
 // Verifies retransmission attempts stop after the fixed retry-count cap instead

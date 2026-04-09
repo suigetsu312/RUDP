@@ -43,6 +43,7 @@ struct TxEntry final {
   std::uint64_t first_send_ms = 0;
   std::uint64_t last_send_ms = 0;
   std::uint32_t retry_count = 0;
+  std::uint32_t gap_evidence_count = 0;
   bool fast_retx_pending = false;
 };
 
@@ -56,6 +57,7 @@ struct SessionEvent final {
   };
 
   Type type = Type::DataReceived;
+  std::uint32_t seq = 0;
   std::uint32_t channel_id = 0;
   Rudp::ChannelType channel_type = Rudp::ChannelType::Unreliable;
   std::vector<std::byte> payload;
@@ -117,6 +119,8 @@ struct TxSessionState final {
   std::uint64_t final_ack_linger_until_ms = 0;
   bool fin_pending = false;
   bool ack_only_pending = false;
+  bool reliable_ack_pending = false;
+  std::uint64_t reliable_ack_due_ms = 0;
   bool activity_ack_pending = false;
   ProbeTxState probe;
 };
