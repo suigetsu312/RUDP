@@ -184,6 +184,28 @@ void emit_connection_decision_events(RxSessionState& rx,
          state.last_rx_ms + Rudp::Config::current().transport.idle_timeout_ms;
 }
 
+void mark_idle_timeout(SessionState& state) {
+  state.connection_state = ConnectionState::Reset;
+  emit_local_error(state.rx, "idle timeout");
+}
+
+void schedule_pending_tx_work(SessionState& state, std::uint64_t now_ms) {
+  if (should_schedule_reliable_ack(state, now_ms)) {
+    state.tx.ack_only_pending = true;
+    state.tx.reliable_ack_pending = false;
+    return;
+  }
+
+  if (should_schedule_activity_ack(state, now_ms)) {
+    state.tx.ack_only_pending = true;
+    return;
+  }
+
+  if (should_schedule_probe(state, now_ms)) {
+    state.tx.probe.ping_pending = true;
+  }
+}
+
 void record_received_stats(SessionState& state,
                            const Rudp::PacketView&,
                            ControlKind control_kind,
@@ -233,6 +255,41 @@ void record_outbound_stats(SessionState& state,
   }
 }
 
+void update_outbound_probe_state(SessionState& state,
+                                 ControlKind control_kind,
+                                 std::uint64_t now_ms) {
+  if (control_kind != ControlKind::Ping) {
+    return;
+  }
+
+  state.tx.probe.ping_outstanding = true;
+  state.tx.probe.last_sent_ms = now_ms;
+  state.tx.probe.last_ping_sent_ms = now_ms;
+}
+
+void clear_outbound_ack_state(SessionState& state, ControlKind control_kind) {
+  state.tx.activity_ack_pending = false;
+  if (control_kind == ControlKind::Ack) {
+    state.tx.reliable_ack_pending = false;
+  }
+}
+
+void apply_outbound_result(SessionState& state,
+                           const std::vector<std::byte>& datagram,
+                           std::uint64_t now_ms,
+                           bool is_retransmission) {
+  const auto decoded = Rudp::Codec::decode(datagram);
+  if (!decoded.has_value()) {
+    return;
+  }
+
+  const auto control_kind = classify_control_kind(decoded->header);
+  update_outbound_probe_state(state, control_kind, now_ms);
+  record_outbound_stats(state, *decoded, datagram.size(), now_ms,
+                        is_retransmission);
+  clear_outbound_ack_state(state, control_kind);
+}
+
 void handle_probe_receive(SessionState& state,
                           ControlKind control_kind,
                           std::uint64_t now_ms) {
@@ -257,6 +314,33 @@ void handle_probe_receive(SessionState& state,
       state.stats.max_rtt_ms = rtt_ms;
     }
   }
+}
+
+void update_post_receive_liveness(SessionState& state, ControlKind control_kind) {
+  if (control_kind == ControlKind::None &&
+      state.connection_state == ConnectionState::Established) {
+    state.tx.activity_ack_pending = true;
+  }
+}
+
+void schedule_receive_side_ack(SessionState& state,
+                               const Rudp::PacketView& packet,
+                               ControlKind control_kind,
+                               const RxPacketResult& rx_result,
+                               std::uint64_t now_ms) {
+  if (!rx_result.schedule_ack_only) {
+    return;
+  }
+
+  if (control_kind == ControlKind::None &&
+      Rudp::isReliableChannel(packet.header.channel_type)) {
+    state.tx.reliable_ack_pending = true;
+    state.tx.reliable_ack_due_ms =
+        now_ms + Rudp::Config::current().transport.reliable_ack_delay_ms;
+    return;
+  }
+
+  state.tx.ack_only_pending = true;
 }
 
 }  // namespace
@@ -300,19 +384,11 @@ void Session::queue_send(std::uint32_t channel_id,
 
 std::optional<std::vector<std::byte>> Session::poll_tx(std::uint64_t now_ms) {
   if (should_timeout_idle_session(state_, now_ms)) {
-    state_.connection_state = ConnectionState::Reset;
-    emit_local_error(state_.rx, "idle timeout");
+    mark_idle_timeout(state_);
     return std::nullopt;
   }
 
-  if (should_schedule_reliable_ack(state_, now_ms)) {
-    state_.tx.ack_only_pending = true;
-    state_.tx.reliable_ack_pending = false;
-  } else if (should_schedule_activity_ack(state_, now_ms)) {
-    state_.tx.ack_only_pending = true;
-  } else if (should_schedule_probe(state_, now_ms)) {
-    state_.tx.probe.ping_pending = true;
-  }
+  schedule_pending_tx_work(state_, now_ms);
 
   auto result =
       tx_handler_.poll(now_ms, state_.role, state_.conn_id,
@@ -323,21 +399,8 @@ std::optional<std::vector<std::byte>> Session::poll_tx(std::uint64_t now_ms) {
     return std::nullopt;
   }
   if (result.datagram.has_value()) {
-    const auto decoded = Rudp::Codec::decode(*result.datagram);
-    if (decoded.has_value()) {
-      const auto control_kind = classify_control_kind(decoded->header);
-      if (control_kind == ControlKind::Ping) {
-        state_.tx.probe.ping_outstanding = true;
-        state_.tx.probe.last_sent_ms = now_ms;
-        state_.tx.probe.last_ping_sent_ms = now_ms;
-      }
-      record_outbound_stats(state_, *decoded, result.datagram->size(), now_ms,
-                            result.retransmission);
-      state_.tx.activity_ack_pending = false;
-      if (control_kind == ControlKind::Ack) {
-        state_.tx.reliable_ack_pending = false;
-      }
-    }
+    apply_outbound_result(state_, *result.datagram, now_ms,
+                          result.retransmission);
   }
   return result.datagram;
 }
@@ -380,21 +443,8 @@ void Session::on_datagram_received(std::span<const std::byte> bytes,
   const auto rx_result =
       rx_handler_.on_packet(*decoded, now_ms, control_kind, state_.rx);
 
-  if (control_kind == ControlKind::None &&
-      state_.connection_state == ConnectionState::Established) {
-    state_.tx.activity_ack_pending = true;
-  }
-
-  if (rx_result.schedule_ack_only) {
-    if (control_kind == ControlKind::None &&
-        Rudp::isReliableChannel(decoded->header.channel_type)) {
-      state_.tx.reliable_ack_pending = true;
-      state_.tx.reliable_ack_due_ms =
-          now_ms + Rudp::Config::current().transport.reliable_ack_delay_ms;
-    } else {
-      state_.tx.ack_only_pending = true;
-    }
-  }
+  update_post_receive_liveness(state_, control_kind);
+  schedule_receive_side_ack(state_, *decoded, control_kind, rx_result, now_ms);
 }
 
 void Session::apply_connection_decision(const Rudp::PacketView& packet,

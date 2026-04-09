@@ -35,37 +35,37 @@ bool apply_kv(Settings& settings,
               std::string_view key,
               std::string_view value,
               std::string* error_message) {
+  auto& transport = settings.transport;
+  auto& runtime = settings.runtime;
+
   if (key == "RUDP_TRANSPORT_INITIAL_RTO_MS") {
-    return assign_integer(settings.transport.initial_rto_ms, value,
-                          error_message, key);
+    return assign_integer(transport.initial_rto_ms, value, error_message, key);
   }
   if (key == "RUDP_TRANSPORT_MAX_RTO_MS") {
-    return assign_integer(settings.transport.max_rto_ms, value, error_message,
-                          key);
+    return assign_integer(transport.max_rto_ms, value, error_message, key);
   }
   if (key == "RUDP_TRANSPORT_MAX_RETRANSMIT_COUNT") {
-    return assign_integer(settings.transport.max_retransmit_count, value,
-                          error_message, key);
+    return assign_integer(transport.max_retransmit_count, value, error_message,
+                          key);
   }
   if (key == "RUDP_TRANSPORT_HANDSHAKE_LINGER_MS") {
-    return assign_integer(settings.transport.handshake_linger_ms, value,
-                          error_message, key);
+    return assign_integer(transport.handshake_linger_ms, value, error_message,
+                          key);
   }
   if (key == "RUDP_TRANSPORT_KEEPALIVE_IDLE_MS") {
-    return assign_integer(settings.transport.keepalive_idle_ms, value,
-                          error_message, key);
+    return assign_integer(transport.keepalive_idle_ms, value, error_message,
+                          key);
   }
   if (key == "RUDP_TRANSPORT_IDLE_TIMEOUT_MS") {
-    return assign_integer(settings.transport.idle_timeout_ms, value,
-                          error_message, key);
+    return assign_integer(transport.idle_timeout_ms, value, error_message, key);
   }
   if (key == "RUDP_TRANSPORT_RELIABLE_ACK_DELAY_MS") {
-    return assign_integer(settings.transport.reliable_ack_delay_ms, value,
-                          error_message, key);
+    return assign_integer(transport.reliable_ack_delay_ms, value, error_message,
+                          key);
   }
   if (key == "RUDP_TRANSPORT_FAST_RETX_EVIDENCE_THRESHOLD") {
-    return assign_integer(settings.transport.fast_retx_evidence_threshold,
-                          value, error_message, key);
+    return assign_integer(transport.fast_retx_evidence_threshold, value,
+                          error_message, key);
   }
   if (key == "RUDP_TRANSPORT_ENABLE_ACTIVITY_ACK_ONLY") {
     bool parsed = false;
@@ -75,51 +75,47 @@ bool apply_kv(Settings& settings,
       }
       return false;
     }
-    settings.transport.enable_activity_ack_only = parsed;
+    transport.enable_activity_ack_only = parsed;
     return true;
   }
   if (key == "RUDP_RUNTIME_SERVER_BIND_ADDRESS") {
-    settings.runtime.server_bind_address = Rudp::Utils::unquote(value);
+    runtime.server_bind_address = Rudp::Utils::unquote(value);
     return true;
   }
   if (key == "RUDP_RUNTIME_SERVER_PORT") {
-    return assign_integer(settings.runtime.server_port, value, error_message,
-                          key);
+    return assign_integer(runtime.server_port, value, error_message, key);
   }
   if (key == "RUDP_RUNTIME_CLIENT_SERVER_ADDRESS") {
-    settings.runtime.client_server_address = Rudp::Utils::unquote(value);
+    runtime.client_server_address = Rudp::Utils::unquote(value);
     return true;
   }
   if (key == "RUDP_RUNTIME_CLIENT_SERVER_PORT") {
-    return assign_integer(settings.runtime.client_server_port, value,
-                          error_message, key);
+    return assign_integer(runtime.client_server_port, value, error_message, key);
   }
   if (key == "RUDP_RUNTIME_CLIENT_BIND_ADDRESS") {
-    settings.runtime.client_bind_address = Rudp::Utils::unquote(value);
+    runtime.client_bind_address = Rudp::Utils::unquote(value);
     return true;
   }
   if (key == "RUDP_RUNTIME_SOCKET_BUFFER_SIZE") {
-    return assign_integer(settings.runtime.socket_buffer_size, value,
-                          error_message, key);
+    return assign_integer(runtime.socket_buffer_size, value, error_message, key);
   }
   if (key == "RUDP_RUNTIME_SERVER_LOOP_SLEEP_US") {
-    return assign_integer(settings.runtime.server_loop_sleep_us, value,
-                          error_message, key);
+    return assign_integer(runtime.server_loop_sleep_us, value, error_message,
+                          key);
   }
   if (key == "RUDP_RUNTIME_CLIENT_SELECT_TIMEOUT_US") {
-    return assign_integer(settings.runtime.client_select_timeout_us, value,
-                          error_message, key);
+    return assign_integer(runtime.client_select_timeout_us, value, error_message,
+                          key);
   }
   if (key == "RUDP_RUNTIME_CLIENT_POLL_BUDGET") {
-    return assign_integer(settings.runtime.client_poll_budget, value,
-                          error_message, key);
+    return assign_integer(runtime.client_poll_budget, value, error_message, key);
   }
   if (key == "RUDP_RUNTIME_SERVER_LOG_PATH") {
-    settings.runtime.server_log_path = Rudp::Utils::unquote(value);
+    runtime.server_log_path = Rudp::Utils::unquote(value);
     return true;
   }
   if (key == "RUDP_RUNTIME_CLIENT_LOG_PATH") {
-    settings.runtime.client_log_path = Rudp::Utils::unquote(value);
+    runtime.client_log_path = Rudp::Utils::unquote(value);
     return true;
   }
   return true;
